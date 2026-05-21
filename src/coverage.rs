@@ -57,33 +57,16 @@ bourne::from_json! {
     }
 }
 
-struct LlvmTools {
-    profdata: PathBuf,
-    cov: PathBuf,
+pub(crate) struct LlvmTools {
+    pub profdata: PathBuf,
+    pub cov: PathBuf,
 }
 
-fn find_llvm_tools() -> Result<LlvmTools, Error> {
-    let sysroot_out = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()?;
-    let sysroot = String::from_utf8_lossy(&sysroot_out.stdout)
-        .trim()
-        .to_string();
-
-    let version_out = Command::new("rustc").arg("-vV").output()?;
-    let version_str = String::from_utf8_lossy(&version_out.stdout);
-    let host = version_str
-        .lines()
-        .find_map(|l| l.strip_prefix("host: "))
-        .ok_or_else(|| Error::ToolNotFound {
-            tool: "rustc host triple".into(),
-        })?
-        .to_string();
-
-    let bin_dir = PathBuf::from(&sysroot)
+pub(crate) fn resolve_llvm_tools(sysroot: &str, host: &str) -> Result<LlvmTools, Error> {
+    let bin_dir = PathBuf::from(sysroot)
         .join("lib")
         .join("rustlib")
-        .join(&host)
+        .join(host)
         .join("bin");
 
     let profdata = bin_dir.join("llvm-profdata");
@@ -101,6 +84,30 @@ fn find_llvm_tools() -> Result<LlvmTools, Error> {
     }
 
     Ok(LlvmTools { profdata, cov })
+}
+
+pub(crate) fn parse_rustc_host(version_output: &str) -> Option<String> {
+    version_output
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .map(|s| s.to_string())
+}
+
+fn find_llvm_tools() -> Result<LlvmTools, Error> {
+    let sysroot_out = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()?;
+    let sysroot = String::from_utf8_lossy(&sysroot_out.stdout)
+        .trim()
+        .to_string();
+
+    let version_out = Command::new("rustc").arg("-vV").output()?;
+    let version_str = String::from_utf8_lossy(&version_out.stdout);
+    let host = parse_rustc_host(&version_str).ok_or_else(|| Error::ToolNotFound {
+        tool: "rustc host triple".into(),
+    })?;
+
+    resolve_llvm_tools(&sysroot, &host)
 }
 
 fn clean_profraw(crappy_dir: &Path) -> Result<(), Error> {
@@ -173,7 +180,7 @@ fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Erro
     Ok(binaries)
 }
 
-fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error> {
+pub(crate) fn collect_profraw(crappy_dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut profraw_files = Vec::new();
     for entry in fs::read_dir(crappy_dir)? {
         let path = entry?.path();
@@ -181,6 +188,11 @@ fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error
             profraw_files.push(path);
         }
     }
+    Ok(profraw_files)
+}
+
+pub(crate) fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error> {
+    let profraw_files = collect_profraw(crappy_dir)?;
 
     if profraw_files.is_empty() {
         return Err(Error::NoProfrawFiles);
@@ -206,7 +218,7 @@ fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error
     Ok(profdata_path)
 }
 
-fn export_coverage(
+pub(crate) fn export_coverage(
     tools: &LlvmTools,
     profdata_path: &Path,
     binaries: &[PathBuf],
@@ -340,6 +352,27 @@ mod tests {
         vec![start, 1, end, 1, count, 0, 0, 0]
     }
 
+    fn tmpdir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("crappy-cov-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mock_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    // --- compute_line_coverage ---
+
     #[test]
     fn fully_covered() {
         let regions = vec![region(1, 5, 3)];
@@ -383,6 +416,8 @@ mod tests {
         assert!((compute_line_coverage(&regions) - 100.0).abs() < f64::EPSILON);
     }
 
+    // --- region_span ---
+
     #[test]
     fn region_span_basic() {
         let regions = vec![region(5, 10, 1), region(12, 20, 0)];
@@ -393,6 +428,8 @@ mod tests {
     fn region_span_empty() {
         assert_eq!(region_span(&[]), None);
     }
+
+    // --- find_test_binaries ---
 
     #[test]
     fn find_test_binaries_parses_artifacts() {
@@ -417,6 +454,8 @@ not json at all
         assert!(find_test_binaries(stdout).is_empty());
     }
 
+    // --- extract_function_coverage ---
+
     #[test]
     fn extract_function_coverage_filters_by_prefix() {
         let json = br#"{"data":[{"functions":[
@@ -428,13 +467,25 @@ not json at all
         assert_eq!(results[0].file, PathBuf::from("/proj/src/lib.rs"));
     }
 
-    fn tmpdir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("crappy-cov-test-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn extract_skips_empty_regions() {
+        let json = br#"{"data":[{"functions":[
+            {"name":"f","filenames":["/proj/src/lib.rs"],"regions":[],"count":0}
+        ]}]}"#;
+        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
+        assert!(results.is_empty());
     }
+
+    #[test]
+    fn extract_skips_no_filenames() {
+        let json = br#"{"data":[{"functions":[
+            {"name":"f","filenames":[],"regions":[[1,1,5,1,1,0,0,0]],"count":1}
+        ]}]}"#;
+        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
+        assert!(results.is_empty());
+    }
+
+    // --- clean_profraw ---
 
     #[test]
     fn clean_profraw_removes_profraw_files() {
@@ -469,21 +520,170 @@ not json at all
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // --- parse_rustc_host ---
+
     #[test]
-    fn extract_skips_empty_regions() {
-        let json = br#"{"data":[{"functions":[
-            {"name":"f","filenames":["/proj/src/lib.rs"],"regions":[],"count":0}
-        ]}]}"#;
-        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
-        assert!(results.is_empty());
+    fn parse_host_from_version_output() {
+        let output = "rustc 1.89.0 (abc123 2025-01-01)\nbinary: rustc\nhost: x86_64-unknown-linux-gnu\nrelease: 1.89.0\n";
+        assert_eq!(
+            parse_rustc_host(output),
+            Some("x86_64-unknown-linux-gnu".into())
+        );
     }
 
     #[test]
-    fn extract_skips_no_filenames() {
-        let json = br#"{"data":[{"functions":[
-            {"name":"f","filenames":[],"regions":[[1,1,5,1,1,0,0,0]],"count":1}
-        ]}]}"#;
-        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
-        assert!(results.is_empty());
+    fn parse_host_missing() {
+        assert_eq!(parse_rustc_host("no host here"), None);
+    }
+
+    // --- resolve_llvm_tools ---
+
+    #[test]
+    fn resolve_finds_tools_in_sysroot() {
+        let dir = tmpdir("sysroot");
+        let bin = dir
+            .join("lib")
+            .join("rustlib")
+            .join("x86_64-unknown-linux-gnu")
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        mock_script(&bin, "llvm-profdata", "true");
+        mock_script(&bin, "llvm-cov", "true");
+
+        let tools = resolve_llvm_tools(dir.to_str().unwrap(), "x86_64-unknown-linux-gnu").unwrap();
+        assert!(tools.profdata.exists());
+        assert!(tools.cov.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_errors_on_missing_profdata() {
+        let dir = tmpdir("noprof");
+        let bin = dir
+            .join("lib")
+            .join("rustlib")
+            .join("x86_64-unknown-linux-gnu")
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        mock_script(&bin, "llvm-cov", "true");
+
+        let err = resolve_llvm_tools(dir.to_str().unwrap(), "x86_64-unknown-linux-gnu");
+        assert!(err.is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_errors_on_missing_cov() {
+        let dir = tmpdir("nocov");
+        let bin = dir
+            .join("lib")
+            .join("rustlib")
+            .join("x86_64-unknown-linux-gnu")
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        mock_script(&bin, "llvm-profdata", "true");
+
+        let err = resolve_llvm_tools(dir.to_str().unwrap(), "x86_64-unknown-linux-gnu");
+        assert!(err.is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- collect_profraw ---
+
+    #[test]
+    fn collect_profraw_finds_files() {
+        let dir = tmpdir("profraw");
+        fs::write(dir.join("a.profraw"), "").unwrap();
+        fs::write(dir.join("b.profraw"), "").unwrap();
+        fs::write(dir.join("c.txt"), "").unwrap();
+
+        let files = collect_profraw(&dir).unwrap();
+        assert_eq!(files.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- merge_profdata with mock ---
+
+    #[test]
+    fn merge_profdata_calls_tool_and_returns_path() {
+        let dir = tmpdir("merge");
+        fs::write(dir.join("a.profraw"), "").unwrap();
+
+        let profdata_script = mock_script(&dir, "mock-profdata", "touch \"$4\"");
+        let tools = LlvmTools {
+            profdata: profdata_script,
+            cov: PathBuf::from("/dev/null"),
+        };
+
+        let result = merge_profdata(&tools, &dir).unwrap();
+        assert_eq!(result, dir.join("coverage.profdata"));
+        assert!(result.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_profdata_errors_on_no_profraw() {
+        let dir = tmpdir("nomerge");
+        let tools = LlvmTools {
+            profdata: PathBuf::from("/dev/null"),
+            cov: PathBuf::from("/dev/null"),
+        };
+
+        let err = merge_profdata(&tools, &dir);
+        assert!(matches!(err, Err(Error::NoProfrawFiles)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_profdata_errors_on_tool_failure() {
+        let dir = tmpdir("mergefail");
+        fs::write(dir.join("a.profraw"), "").unwrap();
+
+        let profdata_script = mock_script(&dir, "mock-profdata-fail", "exit 1");
+        let tools = LlvmTools {
+            profdata: profdata_script,
+            cov: PathBuf::from("/dev/null"),
+        };
+
+        let err = merge_profdata(&tools, &dir);
+        assert!(err.is_err(), "expected error, got: {err:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- export_coverage with mock ---
+
+    #[test]
+    fn export_coverage_returns_stdout() {
+        let dir = tmpdir("export");
+        let json = r#"{"data":[]}"#;
+        let cov_script = mock_script(&dir, "mock-cov", &format!("echo '{json}'"));
+        let tools = LlvmTools {
+            profdata: PathBuf::from("/dev/null"),
+            cov: cov_script,
+        };
+
+        let result = export_coverage(
+            &tools,
+            Path::new("/fake.profdata"),
+            &[PathBuf::from("/fake/bin")],
+        )
+        .unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert!(output.contains(r#""data":[]"#));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_coverage_errors_on_tool_failure() {
+        let dir = tmpdir("exportfail");
+        let cov_script = mock_script(&dir, "mock-cov-fail", "exit 1");
+        let tools = LlvmTools {
+            profdata: PathBuf::from("/dev/null"),
+            cov: cov_script,
+        };
+
+        let err = export_coverage(&tools, Path::new("/fake.profdata"), &[]);
+        assert!(err.is_err(), "expected error, got: {err:?}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
