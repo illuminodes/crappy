@@ -135,7 +135,7 @@ fn parse_args() -> Result<Action, Error> {
 fn print_help() {
     eprintln!(
         "\
-cargo-crappy — CRAP metric analysis for Rust
+cargo-crappy — CRAP metric analysis with idiomatic Rust scoring
 
 USAGE:
     cargo crappy [OPTIONS]
@@ -146,7 +146,47 @@ OPTIONS:
     --exclude-path <PAT>   Exclude functions whose file path contains PAT (repeatable)
     --exclude-fn <NAME>    Exclude a function by name (repeatable)
     -h, --help             Print help
-    -V, --version          Print version"
+    -V, --version          Print version
+
+SCORING:
+    CRAPPY = CRAP x idiom_penalty
+
+    CRAP (Change Risk Anti-Patterns):
+        CRAP = CC^2 x (1 - cov/100)^3 + CC
+        CC   = cyclomatic complexity (branches, match arms, loops, &&/||, ?)
+        cov  = line coverage percentage from instrumented tests
+        A fully-covered function scores CRAPPY = CC (complexity alone).
+        An uncovered function scores CRAPPY = CC^2 + CC (risk amplified).
+
+    Idiom penalty (multiplier >= 1.0):
+        penalty = 1.0 + demerits x 0.25
+        Each violation adds demerits; the penalty multiplies the CRAP score.
+        Clean code gets 1.0x (no change). A single high-weight violation
+        adds 50%. Multiple violations stack.
+
+    Idiom checks (high-weight, 2 demerits each):
+        - Free function whose first param is &Struct (should be a method)
+        - Match on integer/string/char literals (should be an enum)
+        - Primitive `as` cast inside comparison/arithmetic (use Ord/Add traits)
+
+    Idiom checks (low-weight, 1 demerit each):
+        - .unwrap() calls (use ? or .expect())
+        - Explicit drop() calls (use scoped blocks)
+        - vec![] for empty vectors (use Vec::new())
+        - FromIterator::from_iter() (use .collect())
+        - Box<dyn Error> in return types (use concrete error types)
+
+    DRY-ness checks (3 demerits each):
+        - Signature duplicate: two functions with identical (param_types)->return_type
+        - Body duplicate: two functions with identical normalized AST structure
+        Both can stack (6 demerits) when a function matches on both signals.
+
+REPORT COLUMNS:
+    CRAPPY  Combined score (CRAP x penalty). Primary sort key.
+    CRAP    Raw complexity/coverage score without idiom adjustments.
+    CC      Cyclomatic complexity count.
+    Cov%    Line coverage from instrumented test runs.
+    Pen     Idiom penalty multiplier (shown when > 1.0x)."
     );
 }
 
