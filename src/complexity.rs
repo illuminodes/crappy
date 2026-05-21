@@ -153,11 +153,11 @@ fn block_end_line(block: &syn::Block) -> u32 {
     block.brace_token.span.close().end().line as u32
 }
 
-fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| a.path().is_ident("test"))
 }
 
-fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         if !a.path().is_ident("cfg") {
             return false;
@@ -169,14 +169,14 @@ fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
-fn format_type(ty: &syn::Type) -> String {
+pub(crate) fn format_type(ty: &syn::Type) -> String {
     match ty {
         syn::Type::Path(tp) => format_path(&tp.path),
         _ => "_".to_string(),
     }
 }
 
-fn format_path(path: &syn::Path) -> String {
+pub(crate) fn format_path(path: &syn::Path) -> String {
     path.segments
         .last()
         .map(|s| s.ident.to_string())
@@ -217,15 +217,23 @@ fn analyze_source(source: &str) -> Vec<(String, u32)> {
 }
 
 pub fn analyze_complexity(project_dir: &Path) -> Result<Vec<FunctionComplexity>, Error> {
+    let (complexity, _) = analyze_all(project_dir)?;
+    Ok(complexity)
+}
+
+pub fn analyze_all(
+    project_dir: &Path,
+) -> Result<(Vec<FunctionComplexity>, Vec<crate::idiom::FunctionIdioms>), Error> {
     let src_dir = project_dir.join("src");
     if !src_dir.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let mut rs_files = Vec::new();
     collect_rs_files(&src_dir, &mut rs_files)?;
 
-    let mut all_functions = Vec::new();
+    let mut all_complexity = Vec::new();
+    let mut all_idioms = Vec::new();
 
     for file_path in &rs_files {
         let source = fs::read_to_string(file_path)?;
@@ -234,16 +242,21 @@ pub fn analyze_complexity(project_dir: &Path) -> Result<Vec<FunctionComplexity>,
             error: e,
         })?;
 
+        let canonical = file_path.canonicalize()?;
+
         let mut visitor = FileVisitor {
-            file: file_path.canonicalize()?,
+            file: canonical.clone(),
             context: Vec::new(),
             functions: Vec::new(),
         };
         visitor.visit_file(&syntax);
-        all_functions.extend(visitor.functions);
+        all_complexity.extend(visitor.functions);
+
+        let idiom_results = crate::idiom::analyze_idioms_for_file(&canonical, &syntax);
+        all_idioms.extend(idiom_results);
     }
 
-    Ok(all_functions)
+    Ok((all_complexity, all_idioms))
 }
 
 #[cfg(test)]

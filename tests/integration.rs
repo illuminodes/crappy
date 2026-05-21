@@ -76,7 +76,7 @@ mod tests {
     );
 
     assert!(
-        stdout.contains("CRAP"),
+        stdout.contains("CRAPPY"),
         "output should have header: {stdout}"
     );
     assert!(stdout.contains("add"), "should list add function: {stdout}");
@@ -90,7 +90,7 @@ mod tests {
         "should have 2 functions: {stdout}"
     );
     assert!(
-        stdout.contains("Functions above CRAP threshold (30):"),
+        stdout.contains("Functions above CRAPPY threshold (30):"),
         "should show threshold line: {stdout}"
     );
 

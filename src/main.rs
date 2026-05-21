@@ -1,5 +1,6 @@
 mod complexity;
 mod coverage;
+mod idiom;
 mod report;
 mod scoring;
 
@@ -145,11 +146,11 @@ pub(crate) fn analyze(
     let cov = coverage::collect_coverage(project_dir)?;
     eprintln!("  {} functions with coverage data", cov.len());
 
-    eprintln!("Analyzing cyclomatic complexity...");
-    let comp = complexity::analyze_complexity(project_dir)?;
+    eprintln!("Analyzing complexity and idioms...");
+    let (comp, idioms) = complexity::analyze_all(project_dir)?;
     eprintln!("  {} functions analyzed", comp.len());
 
-    let records = scoring::compute_crap_scores(cov, comp, project_dir);
+    let records = scoring::compute_crap_scores(cov, comp, idioms, project_dir);
     eprintln!("  {} functions scored\n", records.len());
 
     report::print_report(&records, opts);
@@ -174,7 +175,7 @@ fn run() -> Result<(), Error> {
     let records = analyze(&project_dir, &opts)?;
 
     if let Some(threshold) = opts.threshold
-        && records.iter().any(|r| r.crap_score > threshold)
+        && records.iter().any(|r| r.crappy_score > threshold)
     {
         std::process::exit(1);
     }

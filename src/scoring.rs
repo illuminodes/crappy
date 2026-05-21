@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::complexity::FunctionComplexity;
 use crate::coverage::FunctionCoverage;
+use crate::idiom::FunctionIdioms;
 
 pub struct CrapRecord {
     pub file: String,
@@ -10,6 +11,9 @@ pub struct CrapRecord {
     pub complexity: u32,
     pub coverage_pct: f64,
     pub crap_score: f64,
+    pub demerits: u32,
+    pub idiom_penalty: f64,
+    pub crappy_score: f64,
     pub start_line: u32,
 }
 
@@ -17,6 +21,10 @@ pub(crate) fn crap_score(complexity: u32, coverage_pct: f64) -> f64 {
     let comp = f64::from(complexity);
     let cov = coverage_pct / 100.0;
     comp * comp * (1.0 - cov).powi(3) + comp
+}
+
+pub(crate) fn idiom_penalty(demerits: u32, body_lines: u32) -> f64 {
+    1.0 + (f64::from(demerits) / f64::from(body_lines.max(1)))
 }
 
 pub(crate) fn overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> u32 {
@@ -29,6 +37,7 @@ pub(crate) fn overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> u32
 pub fn compute_crap_scores(
     coverage: Vec<FunctionCoverage>,
     complexity: Vec<FunctionComplexity>,
+    idioms: Vec<FunctionIdioms>,
     project_dir: &Path,
 ) -> Vec<CrapRecord> {
     let project_prefix = project_dir
@@ -40,7 +49,6 @@ pub fn compute_crap_scores(
         cov_by_file.entry(fc.file.clone()).or_default().push(fc);
     }
 
-    // Merge monomorphized entries with same file+line range
     for entries in cov_by_file.values_mut() {
         entries.sort_by_key(|e| (e.start_line, e.end_line));
 
@@ -58,6 +66,11 @@ pub fn compute_crap_scores(
                 i += 1;
             }
         }
+    }
+
+    let mut idiom_map: HashMap<(PathBuf, String), FunctionIdioms> = HashMap::new();
+    for fi in idioms {
+        idiom_map.insert((fi.file.clone(), fi.qualified_name.clone()), fi);
     }
 
     let mut records = Vec::new();
@@ -86,17 +99,32 @@ pub fn compute_crap_scores(
 
         let score = crap_score(func.complexity, coverage_pct);
 
+        let idiom_key = (func.file.clone(), func.qualified_name.clone());
+        let (demerits, body_lines) = idiom_map
+            .get(&idiom_key)
+            .map(|fi| {
+                let lines = fi.end_line.saturating_sub(fi.start_line) + 1;
+                (fi.demerits, lines)
+            })
+            .unwrap_or((0, 1));
+
+        let penalty = idiom_penalty(demerits, body_lines);
+        let crappy = score * penalty;
+
         records.push(CrapRecord {
             file: file_display,
             name: func.qualified_name.clone(),
             complexity: func.complexity,
             coverage_pct,
             crap_score: score,
+            demerits,
+            idiom_penalty: penalty,
+            crappy_score: crappy,
             start_line: func.start_line,
         });
     }
 
-    records.sort_by(|a, b| b.crap_score.partial_cmp(&a.crap_score).unwrap());
+    records.sort_by(|a, b| b.crappy_score.partial_cmp(&a.crappy_score).unwrap());
     records
 }
 
@@ -111,19 +139,16 @@ mod tests {
 
     #[test]
     fn trivial_uncovered() {
-        // 1^2 * (1-0)^3 + 1 = 2
         assert!((crap_score(1, 0.0) - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn published_example() {
-        // CC=6, cov=0% → 6^2 * 1 + 6 = 42
         assert!((crap_score(6, 0.0) - 42.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn cc12_uncovered() {
-        // CC=12, cov=0% → 144 + 12 = 156  (matches cargo-crap blog example)
         assert!((crap_score(12, 0.0) - 156.0).abs() < f64::EPSILON);
     }
 
@@ -146,6 +171,28 @@ mod tests {
             assert!(cur <= prev, "cov={cov} cur={cur} prev={prev}");
             prev = cur;
         }
+    }
+
+    #[test]
+    fn idiom_penalty_zero_demerits() {
+        assert!((idiom_penalty(0, 10) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn idiom_penalty_proportional() {
+        // 2 demerits in 10 lines → 1.2
+        assert!((idiom_penalty(2, 10) - 1.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn idiom_penalty_dense() {
+        // 5 demerits in 5 lines → 2.0
+        assert!((idiom_penalty(5, 5) - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn idiom_penalty_zero_lines_safe() {
+        assert!((idiom_penalty(1, 0) - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -189,7 +236,7 @@ mod tests {
             complexity: 5,
         }];
 
-        let records = compute_crap_scores(cov, comp, Path::new("/proj"));
+        let records = compute_crap_scores(cov, comp, vec![], Path::new("/proj"));
         assert_eq!(records.len(), 1);
         assert!((records[0].coverage_pct - 80.0).abs() < f64::EPSILON);
         assert_eq!(records[0].complexity, 5);
@@ -206,14 +253,14 @@ mod tests {
             complexity: 3,
         }];
 
-        let records = compute_crap_scores(cov, comp, Path::new("/proj"));
+        let records = compute_crap_scores(cov, comp, vec![], Path::new("/proj"));
         assert_eq!(records.len(), 1);
         assert!((records[0].coverage_pct).abs() < f64::EPSILON);
-        assert!((records[0].crap_score - 12.0).abs() < f64::EPSILON); // 9+3
+        assert!((records[0].crap_score - 12.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn results_sorted_by_score_descending() {
+    fn results_sorted_by_crappy_score_descending() {
         let cov = vec![];
         let comp = vec![
             FunctionComplexity {
@@ -232,8 +279,46 @@ mod tests {
             },
         ];
 
-        let records = compute_crap_scores(cov, comp, Path::new("/proj"));
+        let records = compute_crap_scores(cov, comp, vec![], Path::new("/proj"));
         assert_eq!(records[0].name, "high");
         assert_eq!(records[1].name, "low");
+    }
+
+    #[test]
+    fn idiom_demerits_multiply_crap() {
+        let comp = vec![FunctionComplexity {
+            file: PathBuf::from("/proj/src/lib.rs"),
+            qualified_name: "f".into(),
+            start_line: 1,
+            end_line: 10,
+            complexity: 5,
+        }];
+        let idioms = vec![FunctionIdioms {
+            file: PathBuf::from("/proj/src/lib.rs"),
+            qualified_name: "f".into(),
+            start_line: 1,
+            end_line: 10,
+            demerits: 5,
+            violations: vec![],
+        }];
+
+        let records = compute_crap_scores(vec![], comp, idioms, Path::new("/proj"));
+        // CRAP = 5^2 * 1 + 5 = 30, penalty = 1 + 5/10 = 1.5, CRAPPY = 45
+        assert!((records[0].crap_score - 30.0).abs() < f64::EPSILON);
+        assert!((records[0].crappy_score - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn clean_idioms_no_penalty() {
+        let comp = vec![FunctionComplexity {
+            file: PathBuf::from("/proj/src/lib.rs"),
+            qualified_name: "f".into(),
+            start_line: 1,
+            end_line: 10,
+            complexity: 5,
+        }];
+
+        let records = compute_crap_scores(vec![], comp, vec![], Path::new("/proj"));
+        assert!((records[0].crap_score - records[0].crappy_score).abs() < f64::EPSILON);
     }
 }

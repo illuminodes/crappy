@@ -34,16 +34,18 @@ pub(crate) fn write_report(
 
     writeln!(
         out,
-        "{:>6} | {:>4} | {:>6} | {:<width$}",
-        "CRAP",
+        "{:>7} | {:>4} | {:>6} | {:>3} | {:<width$}",
+        "CRAPPY",
         "CC",
         "Cov%",
+        "Dem",
         "Function",
         width = name_width,
     )?;
     writeln!(
         out,
-        "{:-<6}-+-{:-<4}-+-{:-<6}-+-{:-<width$}",
+        "{:-<7}-+-{:-<4}-+-{:-<6}-+-{:-<3}-+-{:-<width$}",
+        "",
         "",
         "",
         "",
@@ -53,10 +55,15 @@ pub(crate) fn write_report(
 
     for r in display {
         let location = format!("{}:{}", r.file, r.start_line);
+        let dem = if r.demerits > 0 {
+            format!("{}", r.demerits)
+        } else {
+            String::new()
+        };
         writeln!(
             out,
-            "{:>6.1} | {:>4} | {:>5.1}% | {location} {}",
-            r.crap_score, r.complexity, r.coverage_pct, r.name,
+            "{:>7.1} | {:>4} | {:>5.1}% | {:>3} | {location} {}",
+            r.crappy_score, r.complexity, r.coverage_pct, dem, r.name,
         )?;
     }
 
@@ -64,10 +71,13 @@ pub(crate) fn write_report(
     writeln!(out, "Total functions: {}", records.len())?;
 
     if let Some(threshold) = opts.threshold {
-        let above = records.iter().filter(|r| r.crap_score > threshold).count();
+        let above = records
+            .iter()
+            .filter(|r| r.crappy_score > threshold)
+            .count();
         writeln!(
             out,
-            "Functions above CRAP threshold ({threshold:.0}): {above}"
+            "Functions above CRAPPY threshold ({threshold:.0}): {above}"
         )?;
     }
 
@@ -85,6 +95,23 @@ mod tests {
             complexity: cc,
             coverage_pct: cov,
             crap_score: score,
+            demerits: 0,
+            idiom_penalty: 1.0,
+            crappy_score: score,
+            start_line: 1,
+        }
+    }
+
+    fn record_with_demerits(name: &str, score: f64, demerits: u32, crappy: f64) -> CrapRecord {
+        CrapRecord {
+            file: "src/lib.rs".into(),
+            name: name.into(),
+            complexity: 5,
+            coverage_pct: 50.0,
+            crap_score: score,
+            demerits,
+            idiom_penalty: crappy / score,
+            crappy_score: crappy,
             start_line: 1,
         }
     }
@@ -111,11 +138,12 @@ mod tests {
         };
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("CRAP"));
-        assert!(out.contains("CC"));
-        assert!(out.contains("Cov%"));
-        assert!(out.contains("add"));
-        assert!(out.contains("Total functions: 1"));
+        assert!(out.contains("CRAPPY"), "header: {out}");
+        assert!(out.contains("CC"), "header: {out}");
+        assert!(out.contains("Cov%"), "header: {out}");
+        assert!(out.contains("Dem"), "header: {out}");
+        assert!(out.contains("add"), "row: {out}");
+        assert!(out.contains("Total functions: 1"), "footer: {out}");
     }
 
     #[test]
@@ -148,7 +176,7 @@ mod tests {
         };
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("Functions above CRAP threshold (30): 1"));
+        assert!(out.contains("Functions above CRAPPY threshold (30): 1"));
     }
 
     #[test]
@@ -162,5 +190,34 @@ mod tests {
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(!out.contains("threshold"));
+    }
+
+    #[test]
+    fn demerits_column_shows_count() {
+        let mut buf = Vec::new();
+        let records = vec![record_with_demerits("bad", 30.0, 3, 45.0)];
+        let opts = Opts {
+            threshold: None,
+            top: None,
+        };
+        write_report(&mut buf, &records, &opts).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("  3"), "should show demerit count: {out}");
+    }
+
+    #[test]
+    fn zero_demerits_shows_blank() {
+        let mut buf = Vec::new();
+        let records = vec![record("clean", 1, 100.0, 1.0)];
+        let opts = Opts {
+            threshold: None,
+            top: None,
+        };
+        write_report(&mut buf, &records, &opts).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("|     |"),
+            "zero demerits should be blank: {out}"
+        );
     }
 }
