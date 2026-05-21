@@ -144,7 +144,11 @@ pub fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
     binaries
 }
 
-fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Error> {
+fn run_tests(
+    project_dir: &Path,
+    crappy_dir: &Path,
+    feature_args: &[String],
+) -> Result<Vec<PathBuf>, Error> {
     let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
     if !rustflags.is_empty() {
         rustflags.push(' ');
@@ -153,13 +157,14 @@ fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Erro
 
     let proffile = crappy_dir.join("%m_%p.profraw");
 
-    let output = Command::new("cargo")
-        .args(["test", "--tests", "--message-format=json"])
-        .env("CARGO_INCREMENTAL", "0")
+    let mut cmd = Command::new("cargo");
+    cmd.args(["test", "--tests", "--message-format=json"]);
+    cmd.args(feature_args);
+    cmd.env("CARGO_INCREMENTAL", "0")
         .env("RUSTFLAGS", &rustflags)
         .env("LLVM_PROFILE_FILE", &proffile)
-        .current_dir(project_dir)
-        .output()?;
+        .current_dir(project_dir);
+    let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -335,11 +340,14 @@ pub fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
     f64::from(covered) / f64::from(total) * 100.0
 }
 
-pub fn collect_coverage(project_dir: &Path) -> Result<Vec<FunctionCoverage>, Error> {
+pub fn collect_coverage(
+    project_dir: &Path,
+    feature_args: &[String],
+) -> Result<Vec<FunctionCoverage>, Error> {
     let crappy_dir = project_dir.join("target").join("crappy");
 
     clean_profraw(&crappy_dir)?;
-    let binaries = run_tests(project_dir, &crappy_dir)?;
+    let binaries = run_tests(project_dir, &crappy_dir, feature_args)?;
     let tools = find_llvm_tools()?;
     let profdata_path = merge_profdata(&tools, &crappy_dir)?;
     let json = export_coverage(&tools, &profdata_path, &binaries)?;

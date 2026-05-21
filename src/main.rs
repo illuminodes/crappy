@@ -62,6 +62,9 @@ pub(crate) struct Opts {
     pub top: Option<usize>,
     pub exclude_paths: Vec<String>,
     pub exclude_fns: Vec<String>,
+    pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
 }
 
 enum Action {
@@ -109,6 +112,12 @@ fn parse_args_from(args: &[String]) -> Result<Action, Error> {
                 let val = parse_flag_value(args, &mut i, "--exclude-fn")?;
                 opts.exclude_fns.push(val.to_string());
             }
+            "--features" => {
+                let val = parse_flag_value(args, &mut i, "--features")?;
+                opts.features.push(val.to_string());
+            }
+            "--all-features" => opts.all_features = true,
+            "--no-default-features" => opts.no_default_features = true,
             "-h" | "--help" => return Ok(Action::Help),
             "-V" | "--version" => return Ok(Action::Version),
             other => {
@@ -145,6 +154,9 @@ OPTIONS:
     --top <N>              Show only the top N worst functions
     --exclude-path <PAT>   Exclude functions whose file path contains PAT (repeatable)
     --exclude-fn <NAME>    Exclude a function by name (repeatable)
+    --features <F>         Comma-separated features to activate (passed to cargo test)
+    --all-features         Activate all available features
+    --no-default-features  Do not activate the `default` feature
     -h, --help             Print help
     -V, --version          Print version
 
@@ -190,16 +202,33 @@ REPORT COLUMNS:
     );
 }
 
+pub(crate) fn cargo_feature_args(opts: &Opts) -> Vec<String> {
+    let mut args = Vec::new();
+    for f in &opts.features {
+        args.push("--features".to_string());
+        args.push(f.clone());
+    }
+    if opts.all_features {
+        args.push("--all-features".to_string());
+    }
+    if opts.no_default_features {
+        args.push("--no-default-features".to_string());
+    }
+    args
+}
+
 pub(crate) fn analyze(
     project_dir: &std::path::Path,
     opts: &Opts,
 ) -> Result<Vec<scoring::CrapRecord>, Error> {
+    let feature_args = cargo_feature_args(opts);
+
     eprintln!("Running tests with coverage instrumentation...");
-    let cov = coverage::collect_coverage(project_dir)?;
+    let cov = coverage::collect_coverage(project_dir, &feature_args)?;
     eprintln!("  {} functions with coverage data", cov.len());
 
     eprintln!("Analyzing complexity and idioms...");
-    let (comp, idioms) = complexity::analyze_all(project_dir)?;
+    let (comp, idioms) = complexity::analyze_all(project_dir, &feature_args)?;
     eprintln!("  {} functions analyzed", comp.len());
 
     let mut records = scoring::compute_crap_scores(cov, &comp, idioms, project_dir);
@@ -358,6 +387,55 @@ mod tests {
     }
 
     #[test]
+    fn features_flag() {
+        let a = args(&["--features", "foo,bar"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(opts.features, vec!["foo,bar"]);
+    }
+
+    #[test]
+    fn all_features_flag() {
+        let a = args(&["--all-features"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert!(opts.all_features);
+    }
+
+    #[test]
+    fn no_default_features_flag() {
+        let a = args(&["--no-default-features"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert!(opts.no_default_features);
+    }
+
+    #[test]
+    fn cargo_feature_args_empty() {
+        let opts = Opts::default();
+        assert!(cargo_feature_args(&opts).is_empty());
+    }
+
+    #[test]
+    fn cargo_feature_args_all() {
+        let opts = Opts {
+            features: vec!["foo".into(), "bar".into()],
+            all_features: true,
+            no_default_features: true,
+            ..Opts::default()
+        };
+        let a = cargo_feature_args(&opts);
+        assert!(a.contains(&"--features".to_string()));
+        assert!(a.contains(&"foo".to_string()));
+        assert!(a.contains(&"bar".to_string()));
+        assert!(a.contains(&"--all-features".to_string()));
+        assert!(a.contains(&"--no-default-features".to_string()));
+    }
+
+    #[test]
     fn display_command_error() {
         use std::os::unix::process::ExitStatusExt;
         let e = Error::Command {
@@ -458,7 +536,7 @@ mod tests {
 ",
         );
 
-        let cov = coverage::collect_coverage(&dir).unwrap();
+        let cov = coverage::collect_coverage(&dir, &[]).unwrap();
         assert!(!cov.is_empty(), "should find covered functions");
 
         let add_cov = cov

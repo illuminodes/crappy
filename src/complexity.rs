@@ -260,11 +260,12 @@ pub fn extract_source_dirs(metadata_json: &[u8], fallback: &Path) -> Vec<PathBuf
     dirs
 }
 
-fn find_source_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, Error> {
-    let output = std::process::Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(project_dir)
-        .output()?;
+fn find_source_dirs(project_dir: &Path, feature_args: &[String]) -> Result<Vec<PathBuf>, Error> {
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["metadata", "--no-deps", "--format-version", "1"]);
+    cmd.args(feature_args);
+    cmd.current_dir(project_dir);
+    let output = cmd.output()?;
 
     if !output.status.success() {
         return Ok(vec![project_dir.join("src")]);
@@ -275,8 +276,9 @@ fn find_source_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, Error> {
 
 pub fn analyze_all(
     project_dir: &Path,
+    feature_args: &[String],
 ) -> Result<(Vec<FunctionComplexity>, Vec<crate::idiom::FunctionIdioms>), Error> {
-    let source_dirs = find_source_dirs(project_dir)?;
+    let source_dirs = find_source_dirs(project_dir, feature_args)?;
 
     let mut rs_files = Vec::new();
     for src_dir in &source_dirs {
@@ -488,7 +490,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = analyze_all(&dir).map(|(c, _)| c).unwrap();
+        let result = analyze_all(&dir, &[]).map(|(c, _)| c).unwrap();
         assert_eq!(result.len(), 2);
 
         let simple = result
@@ -509,7 +511,7 @@ mod tests {
     #[test]
     fn analyze_complexity_no_src_dir() {
         let dir = tmpdir("nosrc");
-        let result = analyze_all(&dir).map(|(c, _)| c).unwrap();
+        let result = analyze_all(&dir, &[]).map(|(c, _)| c).unwrap();
         assert!(result.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
