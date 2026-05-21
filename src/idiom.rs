@@ -30,8 +30,6 @@ impl IdiomCheck {
 pub struct FunctionIdioms {
     pub file: PathBuf,
     pub qualified_name: String,
-    pub start_line: u32,
-    pub end_line: u32,
     pub demerits: u32,
 }
 
@@ -71,9 +69,6 @@ impl IdiomFileVisitor {
             format!("{}::{name}", self.context.last().unwrap())
         };
 
-        let start_line = sig.ident.span().start().line as u32;
-        let end_line = block.brace_token.span.close().end().line as u32;
-
         let mut checks = Vec::new();
 
         if is_free && is_free_method_candidate(sig, &self.struct_names) {
@@ -93,8 +88,6 @@ impl IdiomFileVisitor {
         self.functions.push(FunctionIdioms {
             file: self.file.clone(),
             qualified_name: qualified,
-            start_line,
-            end_line,
             demerits,
         });
     }

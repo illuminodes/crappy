@@ -22,8 +22,8 @@ pub(crate) fn crap_score(complexity: u32, coverage_pct: f64) -> f64 {
     comp * comp * (1.0 - cov).powi(3) + comp
 }
 
-pub(crate) fn idiom_penalty(demerits: u32, body_lines: u32) -> f64 {
-    1.0 + (f64::from(demerits) / f64::from(body_lines.max(1)))
+pub(crate) fn idiom_penalty(demerits: u32) -> f64 {
+    1.0 + f64::from(demerits) * 0.25
 }
 
 pub(crate) fn overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> u32 {
@@ -99,15 +99,9 @@ pub fn compute_crap_scores(
         let score = crap_score(func.complexity, coverage_pct);
 
         let idiom_key = (func.file.clone(), func.qualified_name.clone());
-        let (demerits, body_lines) = idiom_map
-            .get(&idiom_key)
-            .map(|fi| {
-                let lines = fi.end_line.saturating_sub(fi.start_line) + 1;
-                (fi.demerits, lines)
-            })
-            .unwrap_or((0, 1));
+        let demerits = idiom_map.get(&idiom_key).map(|fi| fi.demerits).unwrap_or(0);
 
-        let penalty = idiom_penalty(demerits, body_lines);
+        let penalty = idiom_penalty(demerits);
         let crappy = score * penalty;
 
         records.push(CrapRecord {
@@ -173,24 +167,25 @@ mod tests {
 
     #[test]
     fn idiom_penalty_zero_demerits() {
-        assert!((idiom_penalty(0, 10) - 1.0).abs() < f64::EPSILON);
+        assert!((idiom_penalty(0) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn idiom_penalty_proportional() {
-        // 2 demerits in 10 lines → 1.2
-        assert!((idiom_penalty(2, 10) - 1.2).abs() < f64::EPSILON);
+    fn idiom_penalty_single_low_weight() {
+        // 1 demerit → 1.25x
+        assert!((idiom_penalty(1) - 1.25).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn idiom_penalty_dense() {
-        // 5 demerits in 5 lines → 2.0
-        assert!((idiom_penalty(5, 5) - 2.0).abs() < f64::EPSILON);
+    fn idiom_penalty_single_high_weight() {
+        // 2 demerits → 1.5x
+        assert!((idiom_penalty(2) - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn idiom_penalty_zero_lines_safe() {
-        assert!((idiom_penalty(1, 0) - 2.0).abs() < f64::EPSILON);
+    fn idiom_penalty_stacks() {
+        // 4 demerits → 2.0x
+        assert!((idiom_penalty(4) - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -294,15 +289,13 @@ mod tests {
         let idioms = vec![FunctionIdioms {
             file: PathBuf::from("/proj/src/lib.rs"),
             qualified_name: "f".into(),
-            start_line: 1,
-            end_line: 10,
-            demerits: 5,
+            demerits: 4,
         }];
 
         let records = compute_crap_scores(vec![], comp, idioms, Path::new("/proj"));
-        // CRAP = 5^2 * 1 + 5 = 30, penalty = 1 + 5/10 = 1.5, CRAPPY = 45
+        // CRAP = 5^2 * 1 + 5 = 30, penalty = 1 + 4*0.25 = 2.0, CRAPPY = 60
         assert!((records[0].crap_score - 30.0).abs() < f64::EPSILON);
-        assert!((records[0].crappy_score - 45.0).abs() < f64::EPSILON);
+        assert!((records[0].crappy_score - 60.0).abs() < f64::EPSILON);
     }
 
     #[test]
