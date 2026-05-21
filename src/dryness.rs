@@ -11,9 +11,11 @@ pub fn check_dryness(functions: &mut [FunctionIdioms]) {
     for (i, func) in functions.iter_mut().enumerate() {
         if sig_flagged.contains(&i) {
             func.demerits += DRY_WEIGHT;
+            func.sig_duplicate = true;
         }
         if body_flagged.contains(&i) {
             func.demerits += DRY_WEIGHT;
+            func.body_duplicate = true;
         }
     }
 }
@@ -53,6 +55,9 @@ mod tests {
             file: PathBuf::from("test.rs"),
             qualified_name: name.to_string(),
             demerits: 0,
+            checks: Vec::new(),
+            sig_duplicate: false,
+            body_duplicate: false,
             sig_fingerprint: sig.to_string(),
             body_fingerprint: body.to_string(),
         }
@@ -130,6 +135,9 @@ mod tests {
                 file: PathBuf::from("test.rs"),
                 qualified_name: "a".to_string(),
                 demerits: 5,
+                checks: Vec::new(),
+                sig_duplicate: false,
+                body_duplicate: false,
                 sig_fingerprint: "i32->bool".to_string(),
                 body_fingerprint: "unique".to_string(),
             },

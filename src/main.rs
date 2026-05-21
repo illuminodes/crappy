@@ -1,3 +1,5 @@
+#[macro_use]
+mod color;
 mod complexity;
 mod coverage;
 mod dryness;
@@ -8,6 +10,7 @@ mod visitor;
 
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Debug)]
 pub enum Error {
@@ -193,12 +196,10 @@ SCORING:
         - Body duplicate: two functions with identical normalized AST structure
         Both can stack (6 demerits) when a function matches on both signals.
 
-REPORT COLUMNS:
-    CRAPPY  Combined score (CRAP x penalty). Primary sort key.
-    CRAP    Raw complexity/coverage score without idiom adjustments.
-    CC      Cyclomatic complexity count.
-    Cov%    Line coverage from instrumented test runs.
-    Pen     Idiom penalty multiplier (shown when > 1.0x)."
+OUTPUT:
+    Each function gets a clippy-style diagnostic with its location
+    and actionable suggestions based on what contributes to its score.
+    Functions with CRAPPY >= 30 are reported as warnings; others as notes."
     );
 }
 
@@ -217,19 +218,46 @@ pub(crate) fn cargo_feature_args(opts: &Opts) -> Vec<String> {
     args
 }
 
+fn format_duration(d: std::time::Duration) -> String {
+    let total_secs = d.as_secs();
+    let millis = d.subsec_millis();
+    if total_secs < 60 {
+        format!("{total_secs}.{millis:03}s")
+    } else {
+        let mins = total_secs / 60;
+        let rem = total_secs % 60;
+        format!("{mins}m {rem}.{millis:03}s")
+    }
+}
+
 pub(crate) fn analyze(
     project_dir: &std::path::Path,
     opts: &Opts,
 ) -> Result<Vec<scoring::CrapRecord>, Error> {
+    let start = Instant::now();
     let feature_args = cargo_feature_args(opts);
 
-    eprintln!("Running tests with coverage instrumentation...");
+    eprintln!(
+        "{} tests with coverage instrumentation...",
+        color::bold_green("Instrumenting")
+    );
     let cov = coverage::collect_coverage(project_dir, &feature_args)?;
-    eprintln!("  {} functions with coverage data", cov.len());
+    eprintln!(
+        "    {} {} functions with coverage data",
+        color::bold_green("Collected"),
+        cov.len()
+    );
 
-    eprintln!("Analyzing complexity and idioms...");
+    eprintln!(
+        "    {} complexity and idioms...",
+        color::bold_green("Analyzing")
+    );
     let (comp, idioms) = complexity::analyze_all(project_dir, &feature_args)?;
-    eprintln!("  {} functions analyzed", comp.len());
+    eprintln!(
+        "    {} {} functions",
+        color::bold_green("Analyzed"),
+        comp.len()
+    );
 
     let mut records = scoring::compute_crap_scores(cov, &comp, idioms, project_dir);
 
@@ -241,7 +269,12 @@ pub(crate) fn analyze(
             && !opts.exclude_fns.contains(&r.name)
     });
 
-    eprintln!("  {} functions scored\n", records.len());
+    eprintln!(
+        "    {} {} functions in {}\n",
+        color::bold_green("Finished"),
+        records.len(),
+        format_duration(start.elapsed()),
+    );
 
     report::print_report(&records, opts);
 

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::complexity::FunctionComplexity;
 use crate::coverage::FunctionCoverage;
-use crate::idiom::FunctionIdioms;
+use crate::idiom::{FunctionIdioms, IdiomCheck};
 
 pub struct CrapRecord {
     pub file: String,
@@ -14,6 +14,9 @@ pub struct CrapRecord {
     pub idiom_penalty: f64,
     pub crappy_score: f64,
     pub start_line: u32,
+    pub checks: Vec<IdiomCheck>,
+    pub sig_duplicate: bool,
+    pub body_duplicate: bool,
 }
 
 pub fn crap_score(complexity: u32, coverage_pct: f64) -> f64 {
@@ -99,7 +102,8 @@ pub fn compute_crap_scores(
         let score = crap_score(func.complexity, coverage_pct);
 
         let idiom_key = (func.file.clone(), func.qualified_name.clone());
-        let demerits = idiom_map.get(&idiom_key).map_or(0, |fi| fi.demerits);
+        let idiom_info = idiom_map.remove(&idiom_key);
+        let demerits = idiom_info.as_ref().map_or(0, |fi| fi.demerits);
 
         let penalty = idiom_penalty(demerits);
         let crappy = score * penalty;
@@ -113,6 +117,11 @@ pub fn compute_crap_scores(
             idiom_penalty: penalty,
             crappy_score: crappy,
             start_line: func.start_line,
+            checks: idiom_info
+                .as_ref()
+                .map_or_else(Vec::new, |fi| fi.checks.clone()),
+            sig_duplicate: idiom_info.as_ref().is_some_and(|fi| fi.sig_duplicate),
+            body_duplicate: idiom_info.is_some_and(|fi| fi.body_duplicate),
         });
     }
 
@@ -290,6 +299,9 @@ mod tests {
             file: PathBuf::from("/proj/src/lib.rs"),
             qualified_name: "f".into(),
             demerits: 4,
+            checks: Vec::new(),
+            sig_duplicate: false,
+            body_duplicate: false,
             sig_fingerprint: String::new(),
             body_fingerprint: String::new(),
         }];

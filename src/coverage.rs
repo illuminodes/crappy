@@ -124,6 +124,21 @@ fn clean_profraw(crappy_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+fn clean_artifacts(crappy_dir: &Path) {
+    if let Ok(entries) = fs::read_dir(crappy_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let dominated = path
+                .extension()
+                .is_some_and(|e| e == "profraw" || e == "profdata");
+            if dominated {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+    let _ = fs::remove_dir(crappy_dir);
+}
+
 pub fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
     let mut binaries = Vec::new();
     for line in stdout.lines() {
@@ -347,12 +362,21 @@ pub fn collect_coverage(
     let crappy_dir = project_dir.join("target").join("crappy");
 
     clean_profraw(&crappy_dir)?;
-    let binaries = run_tests(project_dir, &crappy_dir, feature_args)?;
+    let result = collect_coverage_inner(project_dir, &crappy_dir, feature_args);
+    clean_artifacts(&crappy_dir);
+    result
+}
+
+fn collect_coverage_inner(
+    project_dir: &Path,
+    crappy_dir: &Path,
+    feature_args: &[String],
+) -> Result<Vec<FunctionCoverage>, Error> {
+    let binaries = run_tests(project_dir, crappy_dir, feature_args)?;
     let tools = find_llvm_tools()?;
-    let profdata_path = merge_profdata(&tools, &crappy_dir)?;
+    let profdata_path = merge_profdata(&tools, crappy_dir)?;
     let json = export_coverage(&tools, &profdata_path, &binaries)?;
     let project_prefix = project_dir.canonicalize()?;
-
     extract_function_coverage(&json, &project_prefix)
 }
 

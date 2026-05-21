@@ -26,12 +26,32 @@ impl IdiomCheck {
             _ => 1,
         }
     }
+
+    pub const fn suggestion(self) -> &'static str {
+        match self {
+            Self::FreeMethodCandidate => {
+                "first parameter is &Struct — consider making this a method"
+            }
+            Self::MatchOnLiteral => "match on literal values — consider using an enum instead",
+            Self::PrimitiveCastInComparison => {
+                "primitive `as` cast in comparison/arithmetic — use From/Into traits"
+            }
+            Self::Unwrap => ".unwrap() call — use `?` or `.expect(\"reason\")`",
+            Self::ExplicitDrop => "explicit drop() call — use a scoped block instead",
+            Self::EmptyVecMacro => "vec![] for empty vector — use Vec::new()",
+            Self::FromIterInsteadOfCollect => "FromIterator::from_iter() — use .collect() instead",
+            Self::BoxDynError => "Box<dyn Error> in return type — use a concrete error type",
+        }
+    }
 }
 
 pub struct FunctionIdioms {
     pub file: PathBuf,
     pub qualified_name: String,
     pub demerits: u32,
+    pub checks: Vec<IdiomCheck>,
+    pub sig_duplicate: bool,
+    pub body_duplicate: bool,
     pub sig_fingerprint: String,
     pub body_fingerprint: String,
 }
@@ -94,6 +114,9 @@ impl FunctionVisitor for IdiomFileVisitor {
             file: self.file.clone(),
             qualified_name: qualified,
             demerits,
+            checks,
+            sig_duplicate: false,
+            body_duplicate: false,
             sig_fingerprint,
             body_fingerprint,
         });

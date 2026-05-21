@@ -2,6 +2,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+fn cargo_crappy_bin() -> PathBuf {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop(); // remove test binary name
+    path.pop(); // remove `deps`
+    path.push("cargo-crappy");
+    path
+}
+
 fn create_temp_project(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("crappy-integ-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -57,8 +65,8 @@ mod tests {
     )
     .unwrap();
 
-    let output = Command::new("cargo")
-        .args(["crappy", "--threshold", "30"])
+    let output = Command::new(cargo_crappy_bin())
+        .args(["crappy", "--threshold", "10"])
         .current_dir(&dir)
         .output()
         .expect("cargo crappy should run");
@@ -71,27 +79,33 @@ mod tests {
         "should report coverage count: {stderr}"
     );
     assert!(
-        stderr.contains("functions analyzed"),
+        stderr.contains("Analyzed"),
         "should report complexity count: {stderr}"
     );
+    assert!(
+        stderr.contains("Finished"),
+        "should report completion: {stderr}"
+    );
 
     assert!(
-        stdout.contains("CRAPPY"),
-        "output should have header: {stdout}"
+        !stdout.contains("`add`"),
+        "clean function should be filtered: {stdout}"
     );
-    assert!(stdout.contains("add"), "should list add function: {stdout}");
     assert!(
-        stdout.contains("uncovered_branchy"),
+        stdout.contains("`uncovered_branchy`"),
         "should list uncovered_branchy: {stdout}"
     );
-
     assert!(
-        stdout.contains("Total functions: 2"),
-        "should have 2 functions: {stdout}"
+        stdout.contains("-->"),
+        "should have location pointer: {stdout}"
     );
     assert!(
-        stdout.contains("Functions above CRAPPY threshold (30):"),
-        "should show threshold line: {stdout}"
+        stdout.contains("CRAPPY ="),
+        "should show CRAPPY score: {stdout}"
+    );
+    assert!(
+        stdout.contains("threshold 10"),
+        "should show threshold in summary: {stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -117,7 +131,7 @@ mod tests {
     )
     .unwrap();
 
-    let output = Command::new("cargo")
+    let output = Command::new(cargo_crappy_bin())
         .args(["crappy", "--threshold", "100"])
         .current_dir(&dir)
         .output()
@@ -129,7 +143,7 @@ mod tests {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let output = Command::new("cargo")
+    let output = Command::new(cargo_crappy_bin())
         .args(["crappy", "--threshold", "0"])
         .current_dir(&dir)
         .output()

@@ -16,4 +16,4 @@ nursery = { level = "warn", priority = -1 }
 [dependencies]
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
-bourne = { path = "../bourne/crates/bourne" }
+bourne = { version = "0.1", package = "json-bourne" }
