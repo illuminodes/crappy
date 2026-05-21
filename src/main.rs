@@ -4,6 +4,7 @@ mod dryness;
 mod idiom;
 mod report;
 mod scoring;
+mod visitor;
 
 use std::fmt;
 use std::path::PathBuf;

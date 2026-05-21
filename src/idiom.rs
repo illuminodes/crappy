@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use syn::visit::Visit;
 use syn::{BinOp, Expr, FnArg, Item, Pat, ReturnType, Type};
 
-use crate::complexity::{has_cfg_test, has_test_attr};
+use crate::visitor::FunctionVisitor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdiomCheck {
@@ -58,19 +58,19 @@ impl IdiomFileVisitor {
             functions: Vec::new(),
         }
     }
+}
 
-    fn record_function(
-        &mut self,
-        name: &str,
-        sig: &syn::Signature,
-        block: &syn::Block,
-        is_free: bool,
-    ) {
-        let qualified = if self.context.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}::{name}", self.context.last().unwrap())
-        };
+impl FunctionVisitor for IdiomFileVisitor {
+    fn context_mut(&mut self) -> &mut Vec<String> {
+        &mut self.context
+    }
+
+    fn context(&self) -> &[String] {
+        &self.context
+    }
+
+    fn on_function(&mut self, name: &str, sig: &syn::Signature, block: &syn::Block, is_free: bool) {
+        let qualified = self.qualified_name(name);
 
         let mut checks = Vec::new();
 
@@ -102,55 +102,38 @@ impl IdiomFileVisitor {
 
 impl<'ast> Visit<'ast> for IdiomFileVisitor {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        if has_test_attr(&node.attrs) {
-            return;
+        if self.handle_item_fn(node) {
+            syn::visit::visit_item_fn(self, node);
         }
-        let name = node.sig.ident.to_string();
-        self.record_function(&name, &node.sig, &node.block, true);
-        syn::visit::visit_item_fn(self, node);
     }
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
-        let ctx = if let Some((_, path, _)) = &node.trait_ {
-            crate::complexity::format_path(path)
-        } else {
-            crate::complexity::format_type(&node.self_ty)
-        };
-        self.context.push(ctx);
+        self.handle_item_impl_enter(node);
         syn::visit::visit_item_impl(self, node);
-        self.context.pop();
+        self.handle_item_impl_exit();
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        if has_test_attr(&node.attrs) {
-            return;
+        if self.handle_impl_item_fn(node) {
+            syn::visit::visit_impl_item_fn(self, node);
         }
-        let name = node.sig.ident.to_string();
-        self.record_function(&name, &node.sig, &node.block, false);
-        syn::visit::visit_impl_item_fn(self, node);
     }
 
     fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
-        self.context.push(node.ident.to_string());
+        self.handle_item_trait_enter(node);
         syn::visit::visit_item_trait(self, node);
-        self.context.pop();
+        self.handle_item_trait_exit();
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        if let Some(block) = &node.default
-            && !has_test_attr(&node.attrs)
-        {
-            let name = node.sig.ident.to_string();
-            self.record_function(&name, &node.sig, block, false);
-        }
+        self.handle_trait_item_fn(node);
         syn::visit::visit_trait_item_fn(self, node);
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        if has_cfg_test(&node.attrs) {
-            return;
+        if !Self::should_skip_mod(node) {
+            syn::visit::visit_item_mod(self, node);
         }
-        syn::visit::visit_item_mod(self, node);
     }
 }
 
