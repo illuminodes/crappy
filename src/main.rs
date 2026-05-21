@@ -137,6 +137,26 @@ OPTIONS:
     );
 }
 
+pub(crate) fn analyze(
+    project_dir: &std::path::Path,
+    opts: &Opts,
+) -> Result<Vec<scoring::CrapRecord>, Error> {
+    eprintln!("Running tests with coverage instrumentation...");
+    let cov = coverage::collect_coverage(project_dir)?;
+    eprintln!("  {} functions with coverage data", cov.len());
+
+    eprintln!("Analyzing cyclomatic complexity...");
+    let comp = complexity::analyze_complexity(project_dir)?;
+    eprintln!("  {} functions analyzed", comp.len());
+
+    let records = scoring::compute_crap_scores(cov, comp, project_dir);
+    eprintln!("  {} functions scored\n", records.len());
+
+    report::print_report(&records, opts);
+
+    Ok(records)
+}
+
 fn run() -> Result<(), Error> {
     let opts = match parse_args()? {
         Action::Run(opts) => opts,
@@ -151,19 +171,7 @@ fn run() -> Result<(), Error> {
     };
 
     let project_dir = std::env::current_dir()?;
-
-    eprintln!("Running tests with coverage instrumentation...");
-    let cov = coverage::collect_coverage(&project_dir)?;
-    eprintln!("  {} functions with coverage data", cov.len());
-
-    eprintln!("Analyzing cyclomatic complexity...");
-    let comp = complexity::analyze_complexity(&project_dir)?;
-    eprintln!("  {} functions analyzed", comp.len());
-
-    let records = scoring::compute_crap_scores(cov, comp, &project_dir);
-    eprintln!("  {} functions scored\n", records.len());
-
-    report::print_report(&records, &opts);
+    let records = analyze(&project_dir, &opts)?;
 
     if let Some(threshold) = opts.threshold
         && records.iter().any(|r| r.crap_score > threshold)
@@ -320,5 +328,82 @@ mod tests {
         let b_err = bourne::parse::<bool>(b"bad").unwrap_err();
         let e: Error = b_err.into();
         assert!(matches!(e, Error::Json(_)));
+    }
+
+    fn create_temp_project(name: &str, lib_rs: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("crappy-inproc-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"test-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("lib.rs"), lib_rs).unwrap();
+        dir
+    }
+
+    #[test]
+    fn collect_coverage_on_temp_project() {
+        let dir = create_temp_project(
+            "cov",
+            r#"
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+pub fn unused(x: i32) -> i32 { if x > 0 { x } else { -x } }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_add() { assert_eq!(super::add(1, 2), 3); }
+}
+"#,
+        );
+
+        let cov = coverage::collect_coverage(&dir).unwrap();
+        assert!(!cov.is_empty(), "should find covered functions");
+
+        let add_cov = cov
+            .iter()
+            .find(|f| f.file.to_str().unwrap_or("").contains("lib.rs") && f.start_line <= 2);
+        assert!(add_cov.is_some(), "should find coverage for add");
+        assert!(
+            add_cov.unwrap().line_coverage_pct > 0.0,
+            "add should have coverage"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn analyze_full_pipeline() {
+        let dir = create_temp_project(
+            "full",
+            r#"
+pub fn covered() -> i32 { 42 }
+pub fn branchy(x: bool) -> i32 { if x { 1 } else { 2 } }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_covered() { assert_eq!(super::covered(), 42); }
+}
+"#,
+        );
+
+        let opts = Opts {
+            threshold: None,
+            top: None,
+        };
+        let records = analyze(&dir, &opts).unwrap();
+        assert_eq!(records.len(), 2, "should score 2 functions");
+
+        let covered = records.iter().find(|r| r.name == "covered").unwrap();
+        assert_eq!(covered.complexity, 1);
+        assert!(covered.coverage_pct > 0.0);
+        assert!((covered.crap_score - 1.0).abs() < 0.1);
+
+        let branchy = records.iter().find(|r| r.name == "branchy").unwrap();
+        assert!(branchy.complexity >= 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
