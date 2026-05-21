@@ -162,7 +162,19 @@ impl AttrExt for [syn::Attribute] {
     }
 
     fn has_crappy_allow(&self) -> bool {
-        self.iter().any(|a| a.path().is_ident("crappy_allow"))
+        self.iter().any(|a| {
+            if !a.path().is_ident("allow") {
+                return false;
+            }
+            a.parse_args_with(|input: syn::parse::ParseStream| {
+                let items =
+                    syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated(
+                        input,
+                    )?;
+                Ok(items.iter().any(|p| p.is_ident("crappy")))
+            })
+            .unwrap_or(false)
+        })
     }
 
     fn has_cfg_test(&self) -> bool {

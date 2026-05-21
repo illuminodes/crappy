@@ -197,7 +197,8 @@ SCORING:
         Both can stack (6 demerits) when a function matches on both signals.
 
 SUPPRESSION:
-    #[crappy_allow]    Annotate a function to exclude it from analysis.
+    #[allow(crappy)]   Annotate a function to exclude it from analysis.
+                       Use #[allow(unknown_lints, crappy)] to also silence the compiler warning.
 
 OUTPUT:
     Each function gets a clippy-style diagnostic with its location
@@ -284,6 +285,7 @@ pub(crate) fn analyze(
     Ok(records)
 }
 
+#[allow(unknown_lints, crappy)]
 fn run() -> Result<(), Error> {
     let opts = match parse_args()? {
         Action::Run(opts) => opts,

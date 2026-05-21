@@ -199,20 +199,20 @@ mod tests {
 
     #[test]
     fn crappy_allow_skips_free_fn() {
-        let calls = visit("#[crappy_allow] fn skip() {} fn keep() {}");
+        let calls = visit("#[allow(crappy)] fn skip() {} fn keep() {}");
         assert_eq!(calls, vec![("keep".into(), true)]);
     }
 
     #[test]
     fn crappy_allow_skips_impl_method() {
         let calls =
-            visit("struct S; impl S { #[crappy_allow] fn skip(&self) {} fn keep(&self) {} }");
+            visit("struct S; impl S { #[allow(crappy)] fn skip(&self) {} fn keep(&self) {} }");
         assert_eq!(calls, vec![("S::keep".into(), false)]);
     }
 
     #[test]
     fn crappy_allow_skips_trait_default() {
-        let calls = visit("trait T { #[crappy_allow] fn skip(&self) {} fn keep(&self) {} }");
+        let calls = visit("trait T { #[allow(crappy)] fn skip(&self) {} fn keep(&self) {} }");
         assert_eq!(calls, vec![("T::keep".into(), false)]);
     }
 

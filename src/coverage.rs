@@ -159,6 +159,7 @@ pub fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
     binaries
 }
 
+#[allow(unknown_lints, crappy)]
 fn run_tests(
     project_dir: &Path,
     crappy_dir: &Path,
@@ -367,6 +368,7 @@ pub fn collect_coverage(
     result
 }
 
+#[allow(unknown_lints, crappy)]
 fn collect_coverage_inner(
     project_dir: &Path,
     crappy_dir: &Path,
