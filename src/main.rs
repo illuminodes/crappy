@@ -1,5 +1,6 @@
 mod complexity;
 mod coverage;
+mod dryness;
 mod idiom;
 mod report;
 mod scoring;

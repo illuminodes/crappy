@@ -290,6 +290,8 @@ mod tests {
             file: PathBuf::from("/proj/src/lib.rs"),
             qualified_name: "f".into(),
             demerits: 4,
+            sig_fingerprint: String::new(),
+            body_fingerprint: String::new(),
         }];
 
         let records = compute_crap_scores(vec![], &comp, idioms, Path::new("/proj"));

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use syn::visit::Visit;
@@ -31,6 +32,8 @@ pub struct FunctionIdioms {
     pub file: PathBuf,
     pub qualified_name: String,
     pub demerits: u32,
+    pub sig_fingerprint: String,
+    pub body_fingerprint: String,
 }
 
 struct IdiomFileVisitor {
@@ -84,11 +87,15 @@ impl IdiomFileVisitor {
         checks.extend(body_checker.checks);
 
         let demerits: u32 = checks.iter().map(|c| c.weight()).sum();
+        let sig_fingerprint = fingerprint_sig(sig);
+        let body_fingerprint = fingerprint_body(block);
 
         self.functions.push(FunctionIdioms {
             file: self.file.clone(),
             qualified_name: qualified,
             demerits,
+            sig_fingerprint,
+            body_fingerprint,
         });
     }
 }
@@ -320,6 +327,151 @@ fn is_call_to_name(func: &Expr, name: &str) -> bool {
         return seg.ident == name;
     }
     false
+}
+
+// --- Fingerprinting for dryness checks ---
+
+fn fingerprint_sig(sig: &syn::Signature) -> String {
+    let mut parts = Vec::new();
+    for input in &sig.inputs {
+        match input {
+            FnArg::Receiver(r) => {
+                let mutability = if r.mutability.is_some() {
+                    "&mut self"
+                } else {
+                    "&self"
+                };
+                parts.push(mutability.to_string());
+            }
+            FnArg::Typed(t) => parts.push(type_fingerprint(&t.ty)),
+        }
+    }
+    let ret = match &sig.output {
+        ReturnType::Default => "()".to_string(),
+        ReturnType::Type(_, ty) => type_fingerprint(ty),
+    };
+    format!("({})->{ret}", parts.join(","))
+}
+
+fn type_fingerprint(ty: &Type) -> String {
+    match ty {
+        Type::Path(tp) => tp
+            .path
+            .segments
+            .last()
+            .map_or_else(|| "_".to_string(), leak_ident),
+        Type::Reference(r) => {
+            let mutability = if r.mutability.is_some() { "&mut " } else { "&" };
+            format!("{mutability}{}", type_fingerprint(&r.elem))
+        }
+        Type::Tuple(t) => {
+            let inner: Vec<_> = t.elems.iter().map(type_fingerprint).collect();
+            format!("({})", inner.join(","))
+        }
+        Type::Slice(s) => format!("[{}]", type_fingerprint(&s.elem)),
+        Type::ImplTrait(_) => "impl_".to_string(),
+        _ => "_".to_string(),
+    }
+}
+
+fn leak_ident(seg: &syn::PathSegment) -> String {
+    let base = seg.ident.to_string();
+    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+        let generics: Vec<_> = args
+            .args
+            .iter()
+            .filter_map(|a| {
+                if let syn::GenericArgument::Type(t) = a {
+                    Some(type_fingerprint(t))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if generics.is_empty() {
+            base
+        } else {
+            format!("{base}<{}>", generics.join(","))
+        }
+    } else {
+        base
+    }
+}
+
+fn fingerprint_body(block: &syn::Block) -> String {
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut normalizer = BodyNormalizer { tokens: Vec::new() };
+    normalizer.visit_block(block);
+    for token in &normalizer.tokens {
+        token.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+struct BodyNormalizer {
+    tokens: Vec<&'static str>,
+}
+
+impl<'ast> Visit<'ast> for BodyNormalizer {
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        self.tokens.push("if");
+        syn::visit::visit_expr_if(self, node);
+    }
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        self.tokens.push("match");
+        syn::visit::visit_expr_match(self, node);
+    }
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        self.tokens.push("arm");
+        syn::visit::visit_arm(self, node);
+    }
+    fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+        self.tokens.push("while");
+        syn::visit::visit_expr_while(self, node);
+    }
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.tokens.push("for");
+        syn::visit::visit_expr_for_loop(self, node);
+    }
+    fn visit_expr_loop(&mut self, node: &'ast syn::ExprLoop) {
+        self.tokens.push("loop");
+        syn::visit::visit_expr_loop(self, node);
+    }
+    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
+        self.tokens.push("return");
+        syn::visit::visit_expr_return(self, node);
+    }
+    fn visit_expr_try(&mut self, node: &'ast syn::ExprTry) {
+        self.tokens.push("?");
+        syn::visit::visit_expr_try(self, node);
+    }
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        self.tokens.push("call");
+        syn::visit::visit_expr_call(self, node);
+    }
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        self.tokens.push("method");
+        syn::visit::visit_expr_method_call(self, node);
+    }
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        self.tokens.push("binop");
+        syn::visit::visit_expr_binary(self, node);
+    }
+    fn visit_expr_unary(&mut self, node: &'ast syn::ExprUnary) {
+        self.tokens.push("unop");
+        syn::visit::visit_expr_unary(self, node);
+    }
+    fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+        self.tokens.push("assign");
+        syn::visit::visit_expr_assign(self, node);
+    }
+    fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {
+        self.tokens.push("closure");
+    }
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        self.tokens.push("let");
+        syn::visit::visit_local(self, node);
+    }
 }
 
 pub fn analyze_idioms_for_file(file: &std::path::Path, syntax: &syn::File) -> Vec<FunctionIdioms> {

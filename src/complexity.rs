@@ -261,9 +261,11 @@ fn find_source_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, Error> {
             if target.kind.iter().any(|k| k == "lib" || k == "bin") {
                 let src_path = PathBuf::from(&target.src_path);
                 if let Some(parent) = src_path.parent()
-                    && parent.exists() && !dirs.contains(&parent.to_path_buf()) {
-                        dirs.push(parent.to_path_buf());
-                    }
+                    && parent.exists()
+                    && !dirs.contains(&parent.to_path_buf())
+                {
+                    dirs.push(parent.to_path_buf());
+                }
             }
         }
     }
@@ -310,6 +312,8 @@ pub fn analyze_all(
         let idiom_results = crate::idiom::analyze_idioms_for_file(&canonical, &syntax);
         all_idioms.extend(idiom_results);
     }
+
+    crate::dryness::check_dryness(&mut all_idioms);
 
     Ok((all_complexity, all_idioms))
 }
