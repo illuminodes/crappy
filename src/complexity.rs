@@ -200,6 +200,21 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
     Ok(())
 }
 
+pub(crate) fn analyze_source(source: &str) -> Vec<(String, u32)> {
+    let syntax = syn::parse_file(source).expect("test source must parse");
+    let mut visitor = FileVisitor {
+        file: PathBuf::from("test.rs"),
+        context: Vec::new(),
+        functions: Vec::new(),
+    };
+    visitor.visit_file(&syntax);
+    visitor
+        .functions
+        .into_iter()
+        .map(|f| (f.qualified_name, f.complexity))
+        .collect()
+}
+
 pub fn analyze_complexity(project_dir: &Path) -> Result<Vec<FunctionComplexity>, Error> {
     let src_dir = project_dir.join("src");
     if !src_dir.exists() {
@@ -228,4 +243,125 @@ pub fn analyze_complexity(project_dir: &Path) -> Result<Vec<FunctionComplexity>,
     }
 
     Ok(all_functions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cc(source: &str) -> Vec<(String, u32)> {
+        analyze_source(source)
+    }
+
+    #[test]
+    fn trivial_function() {
+        let r = cc("fn add(a: i32, b: i32) -> i32 { a + b }");
+        assert_eq!(r, vec![("add".into(), 1)]);
+    }
+
+    #[test]
+    fn single_if() {
+        let r = cc("fn f(x: bool) { if x { } }");
+        assert_eq!(r[0].1, 2);
+    }
+
+    #[test]
+    fn if_else() {
+        let r = cc("fn f(x: bool) { if x { } else { } }");
+        assert_eq!(r[0].1, 2);
+    }
+
+    #[test]
+    fn nested_if() {
+        let r = cc("fn f(a: bool, b: bool) { if a { if b { } } }");
+        assert_eq!(r[0].1, 3);
+    }
+
+    #[test]
+    fn match_arms() {
+        let r = cc("fn f(x: i32) { match x { 1 => {}, 2 => {}, _ => {} } }");
+        assert_eq!(r[0].1, 4); // 1 base + 3 arms
+    }
+
+    #[test]
+    fn while_loop() {
+        let r = cc("fn f() { while true { } }");
+        assert_eq!(r[0].1, 2);
+    }
+
+    #[test]
+    fn for_loop() {
+        let r = cc("fn f() { for _ in 0..10 { } }");
+        assert_eq!(r[0].1, 2);
+    }
+
+    #[test]
+    fn infinite_loop() {
+        let r = cc("fn f() { loop { break; } }");
+        assert_eq!(r[0].1, 2);
+    }
+
+    #[test]
+    fn logical_and_or() {
+        let r = cc("fn f(a: bool, b: bool, c: bool) -> bool { a && b || c }");
+        assert_eq!(r[0].1, 3); // 1 base + && + ||
+    }
+
+    #[test]
+    fn try_operator() {
+        let r = cc("fn f() -> Result<(), ()> { let _ = Ok::<(), ()>(()).map(|_| ())?; Ok(()) }");
+        assert_eq!(r[0].1, 2); // 1 base + ?
+    }
+
+    #[test]
+    fn closure_not_counted() {
+        let r = cc("fn f() { let _ = |x: bool| { if x { 1 } else { 2 } }; }");
+        assert_eq!(r[0].1, 1); // closure's if not counted in f
+    }
+
+    #[test]
+    fn impl_method_qualified() {
+        let r = cc("struct S; impl S { fn method(&self) {} }");
+        assert_eq!(r[0].0, "S::method");
+        assert_eq!(r[0].1, 1);
+    }
+
+    #[test]
+    fn trait_default_method() {
+        let r = cc("trait T { fn default_method(&self) { if true {} } }");
+        assert_eq!(r[0].0, "T::default_method");
+        assert_eq!(r[0].1, 2);
+    }
+
+    #[test]
+    fn test_functions_skipped() {
+        let r = cc("#[test] fn test_something() { if true {} }");
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn cfg_test_module_skipped() {
+        let r = cc("fn visible() {} #[cfg(test)] mod tests { fn hidden() {} }");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "visible");
+    }
+
+    #[test]
+    fn combined_complexity() {
+        let r = cc("fn complex(x: i32, flag: bool) -> Result<(), ()> {
+                if flag && x > 0 {
+                    match x {
+                        1 => {},
+                        2 => {},
+                        _ => {},
+                    }
+                }
+                for _ in 0..x {
+                    let _ = Ok::<(), ()>(())?;
+                }
+                Ok(())
+            }");
+        // 1 base + if + && + 3 arms + for + ?
+        assert_eq!(r[0].1, 8);
+    }
 }

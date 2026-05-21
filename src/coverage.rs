@@ -157,10 +157,9 @@ fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Erro
             continue;
         }
         let is_test = artifact.profile.as_ref().is_some_and(|p| p.test);
-        if is_test
-            && let Some(exe) = artifact.executable {
-                binaries.push(PathBuf::from(exe));
-            }
+        if is_test && let Some(exe) = artifact.executable {
+            binaries.push(PathBuf::from(exe));
+        }
     }
 
     if binaries.is_empty() {
@@ -203,7 +202,7 @@ fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error
     Ok(profdata_path)
 }
 
-fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
+pub(crate) fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
     let mut line_hits: HashMap<u32, u64> = HashMap::new();
 
     for region in regions {
@@ -303,4 +302,60 @@ pub fn collect_coverage(project_dir: &Path) -> Result<Vec<FunctionCoverage>, Err
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn region(start: u64, end: u64, count: u64) -> Vec<u64> {
+        // [startLine, startCol, endLine, endCol, count, fileId, expandedFileId, kind]
+        vec![start, 1, end, 1, count, 0, 0, 0]
+    }
+
+    #[test]
+    fn fully_covered() {
+        let regions = vec![region(1, 5, 3)];
+        assert!((compute_line_coverage(&regions) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fully_uncovered() {
+        let regions = vec![region(1, 5, 0)];
+        assert!(compute_line_coverage(&regions).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn partial_coverage() {
+        let regions = vec![region(1, 2, 1), region(3, 4, 0)];
+        assert!((compute_line_coverage(&regions) - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn empty_regions_returns_100() {
+        assert!((compute_line_coverage(&[]) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn non_code_region_skipped() {
+        // kind=2 (gap region) should be ignored
+        let regions = vec![vec![1, 1, 5, 1, 0, 0, 0, 2]];
+        assert!((compute_line_coverage(&regions) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn overlapping_regions_take_max_count() {
+        let regions = vec![region(1, 3, 0), region(2, 3, 5)];
+        // line 1: 0, line 2: max(0,5)=5, line 3: max(0,5)=5
+        let cov = compute_line_coverage(&regions);
+        let expected = 2.0 / 3.0 * 100.0;
+        assert!((cov - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn short_region_ignored() {
+        // fewer than 5 elements → skipped
+        let regions = vec![vec![1, 2, 3]];
+        assert!((compute_line_coverage(&regions) - 100.0).abs() < f64::EPSILON);
+    }
 }
