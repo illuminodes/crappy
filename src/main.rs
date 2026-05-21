@@ -16,7 +16,7 @@ pub enum Error {
         tool: String,
     },
     Io(std::io::Error),
-    Json(serde_json::Error),
+    Json(bourne::Error),
     Syn {
         file: PathBuf,
         error: syn::Error,
@@ -47,8 +47,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
+impl From<bourne::Error> for Error {
+    fn from(e: bourne::Error) -> Self {
         Self::Json(e)
     }
 }

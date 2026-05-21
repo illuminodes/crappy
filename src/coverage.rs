@@ -3,8 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
-
 use crate::Error;
 
 pub struct FunctionCoverage {
@@ -14,20 +12,49 @@ pub struct FunctionCoverage {
     pub line_coverage_pct: f64,
 }
 
-#[derive(Deserialize)]
-struct LlvmCovExport {
-    data: Vec<LlvmCovData>,
+// --- cargo test --message-format=json structs ---
+
+bourne::from_json! {
+    #[bourne(deny_unknown_fields = false)]
+    struct CargoArtifact {
+        reason: String,
+        #[bourne(default)]
+        executable: Option<String>,
+        #[bourne(default)]
+        profile: Option<CargoProfile>,
+    }
 }
 
-#[derive(Deserialize)]
-struct LlvmCovData {
-    functions: Vec<LlvmCovFunction>,
+bourne::from_json! {
+    #[bourne(deny_unknown_fields = false)]
+    struct CargoProfile {
+        #[bourne(default)]
+        test: bool,
+    }
 }
 
-#[derive(Deserialize)]
-struct LlvmCovFunction {
-    filenames: Vec<String>,
-    regions: Vec<Vec<serde_json::Value>>,
+// --- llvm-cov export JSON structs ---
+
+bourne::from_json! {
+    #[bourne(deny_unknown_fields = false)]
+    struct LlvmCovExport {
+        data: Vec<LlvmCovData>,
+    }
+}
+
+bourne::from_json! {
+    #[bourne(deny_unknown_fields = false)]
+    struct LlvmCovData {
+        functions: Vec<LlvmCovFunction>,
+    }
+}
+
+bourne::from_json! {
+    #[bourne(deny_unknown_fields = false)]
+    struct LlvmCovFunction {
+        filenames: Vec<String>,
+        regions: Vec<Vec<u64>>,
+    }
 }
 
 struct LlvmTools {
@@ -120,23 +147,20 @@ fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Erro
     let mut binaries = Vec::new();
 
     for line in stdout.lines() {
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if val.get("reason").and_then(|v| v.as_str()) != Some("compiler-artifact") {
+        if !line.starts_with('{') {
             continue;
         }
-        let Some(exe) = val.get("executable").and_then(|v| v.as_str()) else {
+        let Ok(artifact) = bourne::parse_str::<CargoArtifact>(line) else {
             continue;
         };
-        let is_test = val
-            .get("profile")
-            .and_then(|p| p.get("test"))
-            .and_then(|t| t.as_bool())
-            .unwrap_or(false);
-        if is_test {
-            binaries.push(PathBuf::from(exe));
+        if artifact.reason != "compiler-artifact" {
+            continue;
         }
+        let is_test = artifact.profile.as_ref().is_some_and(|p| p.test);
+        if is_test
+            && let Some(exe) = artifact.executable {
+                binaries.push(PathBuf::from(exe));
+            }
     }
 
     if binaries.is_empty() {
@@ -179,56 +203,23 @@ fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error
     Ok(profdata_path)
 }
 
-fn export_coverage(
-    tools: &LlvmTools,
-    profdata_path: &Path,
-    binaries: &[PathBuf],
-) -> Result<LlvmCovExport, Error> {
-    let mut cmd = Command::new(&tools.cov);
-    cmd.args(["export", "-format=text"]);
-    cmd.arg(format!("-instr-profile={}", profdata_path.display()));
-    for bin in binaries {
-        cmd.arg(format!("-object={}", bin.display()));
-    }
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        return Err(Error::Command {
-            tool: "llvm-cov",
-            status: output.status,
-        });
-    }
-
-    let export: LlvmCovExport = serde_json::from_slice(&output.stdout)?;
-    Ok(export)
-}
-
-fn compute_line_coverage(regions: &[Vec<serde_json::Value>]) -> f64 {
+fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
     let mut line_hits: HashMap<u32, u64> = HashMap::new();
 
     for region in regions {
         if region.len() < 5 {
             continue;
         }
-        let Some(start_line) = region[0].as_u64() else {
-            continue;
-        };
-        let Some(end_line) = region[2].as_u64() else {
-            continue;
-        };
-        let Some(count) = region[4].as_u64() else {
-            continue;
-        };
+        let start_line = region[0] as u32;
+        let end_line = region[2] as u32;
+        let count = region[4];
 
-        // Kind is at index 7 if present; 0 = CodeRegion, skip others (gap, expansion, skipped)
-        if region.len() > 7
-            && let Some(kind) = region[7].as_u64()
-            && kind != 0
-        {
+        // Kind is at index 7 if present; 0 = CodeRegion, skip others
+        if region.len() > 7 && region[7] != 0 {
             continue;
         }
 
-        for line in (start_line as u32)..=(end_line as u32) {
+        for line in start_line..=end_line {
             let entry = line_hits.entry(line).or_insert(0);
             *entry = (*entry).max(count);
         }
@@ -250,8 +241,23 @@ pub fn collect_coverage(project_dir: &Path) -> Result<Vec<FunctionCoverage>, Err
     let binaries = run_tests(project_dir, &crappy_dir)?;
     let tools = find_llvm_tools()?;
     let profdata_path = merge_profdata(&tools, &crappy_dir)?;
-    let export = export_coverage(&tools, &profdata_path, &binaries)?;
 
+    let mut cmd = Command::new(&tools.cov);
+    cmd.args(["export", "-format=text"]);
+    cmd.arg(format!("-instr-profile={}", profdata_path.display()));
+    for bin in &binaries {
+        cmd.arg(format!("-object={}", bin.display()));
+    }
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        return Err(Error::Command {
+            tool: "llvm-cov",
+            status: output.status,
+        });
+    }
+
+    let export: LlvmCovExport = bourne::parse(&output.stdout)?;
     let project_prefix = project_dir.canonicalize()?;
 
     let mut results = Vec::new();
@@ -275,11 +281,9 @@ pub fn collect_coverage(project_dir: &Path) -> Result<Vec<FunctionCoverage>, Err
             let mut end_line = 0u32;
 
             for region in &func.regions {
-                if region.len() >= 3
-                    && let (Some(sl), Some(el)) = (region[0].as_u64(), region[2].as_u64())
-                {
-                    start_line = start_line.min(sl as u32);
-                    end_line = end_line.max(el as u32);
+                if region.len() >= 3 {
+                    start_line = start_line.min(region[0] as u32);
+                    end_line = end_line.max(region[2] as u32);
                 }
             }
 
