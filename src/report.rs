@@ -117,10 +117,7 @@ mod tests {
     #[test]
     fn empty_report() {
         let mut buf = Vec::new();
-        let opts = Opts {
-            threshold: None,
-            top: None,
-        };
+        let opts = Opts::default();
         write_report(&mut buf, &[], &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("No functions to report."));
@@ -130,10 +127,7 @@ mod tests {
     fn basic_report_has_header_and_row() {
         let mut buf = Vec::new();
         let records = vec![record("add", 1, 100.0, 1.0)];
-        let opts = Opts {
-            threshold: None,
-            top: None,
-        };
+        let opts = Opts::default();
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("CRAPPY"), "header: {out}");
@@ -153,8 +147,8 @@ mod tests {
             record("c", 1, 100.0, 1.0),
         ];
         let opts = Opts {
-            threshold: None,
             top: Some(2),
+            ..Opts::default()
         };
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -170,7 +164,7 @@ mod tests {
         let records = vec![record("bad", 10, 0.0, 110.0), record("ok", 1, 100.0, 1.0)];
         let opts = Opts {
             threshold: Some(30.0),
-            top: None,
+            ..Opts::default()
         };
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -181,10 +175,7 @@ mod tests {
     fn no_threshold_omits_line() {
         let mut buf = Vec::new();
         let records = vec![record("f", 1, 100.0, 1.0)];
-        let opts = Opts {
-            threshold: None,
-            top: None,
-        };
+        let opts = Opts::default();
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(!out.contains("threshold"));
@@ -194,10 +185,7 @@ mod tests {
     fn penalty_column_shows_multiplier() {
         let mut buf = Vec::new();
         let records = vec![record_with_penalty("bad", 30.0, 1.5)];
-        let opts = Opts {
-            threshold: None,
-            top: None,
-        };
+        let opts = Opts::default();
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("1.5x"), "should show penalty: {out}");
@@ -207,10 +195,7 @@ mod tests {
     fn no_penalty_shows_blank() {
         let mut buf = Vec::new();
         let records = vec![record("clean", 1, 100.0, 1.0)];
-        let opts = Opts {
-            threshold: None,
-            top: None,
-        };
+        let opts = Opts::default();
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(

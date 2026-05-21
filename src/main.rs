@@ -54,9 +54,12 @@ impl From<bourne::Error> for Error {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct Opts {
     pub threshold: Option<f64>,
     pub top: Option<usize>,
+    pub exclude_paths: Vec<String>,
+    pub exclude_fns: Vec<String>,
 }
 
 enum Action {
@@ -77,10 +80,7 @@ fn parse_flag_value<'a>(args: &'a [String], i: &mut usize, name: &str) -> Result
 }
 
 fn parse_args_from(args: &[String]) -> Result<Action, Error> {
-    let mut opts = Opts {
-        threshold: None,
-        top: None,
-    };
+    let mut opts = Opts::default();
 
     let mut i = 0;
     while i < args.len() {
@@ -98,6 +98,14 @@ fn parse_args_from(args: &[String]) -> Result<Action, Error> {
                     val.parse::<usize>()
                         .map_err(|_| arg_error("invalid top value"))?,
                 );
+            }
+            "--exclude-path" => {
+                let val = parse_flag_value(args, &mut i, "--exclude-path")?;
+                opts.exclude_paths.push(val.to_string());
+            }
+            "--exclude-fn" => {
+                let val = parse_flag_value(args, &mut i, "--exclude-fn")?;
+                opts.exclude_fns.push(val.to_string());
             }
             "-h" | "--help" => return Ok(Action::Help),
             "-V" | "--version" => return Ok(Action::Version),
@@ -131,10 +139,12 @@ USAGE:
     cargo crappy [OPTIONS]
 
 OPTIONS:
-    --threshold <N>   Exit with code 1 if any function exceeds this CRAP score
-    --top <N>         Show only the top N worst functions
-    -h, --help        Print help
-    -V, --version     Print version"
+    --threshold <N>        Exit with code 1 if any function exceeds this CRAPPY score
+    --top <N>              Show only the top N worst functions
+    --exclude-path <PAT>   Exclude functions whose file path contains PAT (repeatable)
+    --exclude-fn <NAME>    Exclude a function by name (repeatable)
+    -h, --help             Print help
+    -V, --version          Print version"
     );
 }
 
@@ -150,7 +160,16 @@ pub(crate) fn analyze(
     let (comp, idioms) = complexity::analyze_all(project_dir)?;
     eprintln!("  {} functions analyzed", comp.len());
 
-    let records = scoring::compute_crap_scores(cov, &comp, idioms, project_dir);
+    let mut records = scoring::compute_crap_scores(cov, &comp, idioms, project_dir);
+
+    records.retain(|r| {
+        !opts
+            .exclude_paths
+            .iter()
+            .any(|p| r.file.contains(p.as_str()))
+            && !opts.exclude_fns.contains(&r.name)
+    });
+
     eprintln!("  {} functions scored\n", records.len());
 
     report::print_report(&records, opts);
@@ -258,6 +277,42 @@ mod tests {
     fn invalid_threshold_value() {
         let a = args(&["--threshold", "abc"]);
         assert!(parse_args_from(&a).is_err());
+    }
+
+    #[test]
+    fn exclude_path_flag() {
+        let a = args(&["--exclude-path", "tests/", "--exclude-path", "benches/"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(opts.exclude_paths, vec!["tests/", "benches/"]);
+    }
+
+    #[test]
+    fn exclude_fn_flag() {
+        let a = args(&["--exclude-fn", "main", "--exclude-fn", "run"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(opts.exclude_fns, vec!["main", "run"]);
+    }
+
+    #[test]
+    fn exclude_combined_with_threshold() {
+        let a = args(&[
+            "--threshold",
+            "30",
+            "--exclude-path",
+            "tests/",
+            "--exclude-fn",
+            "run",
+        ]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert!((opts.threshold.unwrap() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(opts.exclude_paths, vec!["tests/"]);
+        assert_eq!(opts.exclude_fns, vec!["run"]);
     }
 
     #[test]
@@ -392,11 +447,7 @@ mod tests {
 ",
         );
 
-        let opts = Opts {
-            threshold: None,
-            top: None,
-        };
-        let records = analyze(&dir, &opts).unwrap();
+        let records = analyze(&dir, &Opts::default()).unwrap();
         assert_eq!(records.len(), 2, "should score 2 functions");
 
         let covered = records.iter().find(|r| r.name == "covered").unwrap();
