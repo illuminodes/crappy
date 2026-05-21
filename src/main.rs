@@ -346,6 +346,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // spawns cargo test — conflicts with outer coverage instrumentation
     fn collect_coverage_on_temp_project() {
         let dir = create_temp_project(
             "cov",
@@ -376,6 +377,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // spawns cargo test — conflicts with outer coverage instrumentation
     fn analyze_full_pipeline() {
         let dir = create_temp_project(
             "full",
