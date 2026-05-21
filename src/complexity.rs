@@ -216,11 +216,6 @@ fn analyze_source(source: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
-pub fn analyze_complexity(project_dir: &Path) -> Result<Vec<FunctionComplexity>, Error> {
-    let (complexity, _) = analyze_all(project_dir)?;
-    Ok(complexity)
-}
-
 pub fn analyze_all(
     project_dir: &Path,
 ) -> Result<(Vec<FunctionComplexity>, Vec<crate::idiom::FunctionIdioms>), Error> {
@@ -433,7 +428,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = analyze_complexity(&dir).unwrap();
+        let result = analyze_all(&dir).map(|(c, _)| c).unwrap();
         assert_eq!(result.len(), 2);
 
         let simple = result
@@ -454,7 +449,7 @@ mod tests {
     #[test]
     fn analyze_complexity_no_src_dir() {
         let dir = tmpdir("nosrc");
-        let result = analyze_complexity(&dir).unwrap();
+        let result = analyze_all(&dir).map(|(c, _)| c).unwrap();
         assert!(result.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }

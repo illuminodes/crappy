@@ -34,17 +34,19 @@ pub(crate) fn write_report(
 
     writeln!(
         out,
-        "{:>7} | {:>4} | {:>6} | {:>3} | {:<width$}",
+        "{:>7} | {:>6} | {:>4} | {:>6} | {:>5} | {:<width$}",
         "CRAPPY",
+        "CRAP",
         "CC",
         "Cov%",
-        "Dem",
+        "Pen",
         "Function",
         width = name_width,
     )?;
     writeln!(
         out,
-        "{:-<7}-+-{:-<4}-+-{:-<6}-+-{:-<3}-+-{:-<width$}",
+        "{:-<7}-+-{:-<6}-+-{:-<4}-+-{:-<6}-+-{:-<5}-+-{:-<width$}",
+        "",
         "",
         "",
         "",
@@ -55,15 +57,15 @@ pub(crate) fn write_report(
 
     for r in display {
         let location = format!("{}:{}", r.file, r.start_line);
-        let dem = if r.demerits > 0 {
-            format!("{}", r.demerits)
+        let pen = if r.idiom_penalty > 1.0 {
+            format!("{:.1}x", r.idiom_penalty)
         } else {
             String::new()
         };
         writeln!(
             out,
-            "{:>7.1} | {:>4} | {:>5.1}% | {:>3} | {location} {}",
-            r.crappy_score, r.complexity, r.coverage_pct, dem, r.name,
+            "{:>7.1} | {:>6.1} | {:>4} | {:>5.1}% | {:>5} | {location} {}",
+            r.crappy_score, r.crap_score, r.complexity, r.coverage_pct, pen, r.name,
         )?;
     }
 
@@ -95,23 +97,21 @@ mod tests {
             complexity: cc,
             coverage_pct: cov,
             crap_score: score,
-            demerits: 0,
             idiom_penalty: 1.0,
             crappy_score: score,
             start_line: 1,
         }
     }
 
-    fn record_with_demerits(name: &str, score: f64, demerits: u32, crappy: f64) -> CrapRecord {
+    fn record_with_penalty(name: &str, score: f64, penalty: f64) -> CrapRecord {
         CrapRecord {
             file: "src/lib.rs".into(),
             name: name.into(),
             complexity: 5,
             coverage_pct: 50.0,
             crap_score: score,
-            demerits,
-            idiom_penalty: crappy / score,
-            crappy_score: crappy,
+            idiom_penalty: penalty,
+            crappy_score: score * penalty,
             start_line: 1,
         }
     }
@@ -141,7 +141,7 @@ mod tests {
         assert!(out.contains("CRAPPY"), "header: {out}");
         assert!(out.contains("CC"), "header: {out}");
         assert!(out.contains("Cov%"), "header: {out}");
-        assert!(out.contains("Dem"), "header: {out}");
+        assert!(out.contains("Pen"), "header: {out}");
         assert!(out.contains("add"), "row: {out}");
         assert!(out.contains("Total functions: 1"), "footer: {out}");
     }
@@ -193,20 +193,20 @@ mod tests {
     }
 
     #[test]
-    fn demerits_column_shows_count() {
+    fn penalty_column_shows_multiplier() {
         let mut buf = Vec::new();
-        let records = vec![record_with_demerits("bad", 30.0, 3, 45.0)];
+        let records = vec![record_with_penalty("bad", 30.0, 1.5)];
         let opts = Opts {
             threshold: None,
             top: None,
         };
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("  3"), "should show demerit count: {out}");
+        assert!(out.contains("1.5x"), "should show penalty: {out}");
     }
 
     #[test]
-    fn zero_demerits_shows_blank() {
+    fn no_penalty_shows_blank() {
         let mut buf = Vec::new();
         let records = vec![record("clean", 1, 100.0, 1.0)];
         let opts = Opts {
@@ -216,8 +216,8 @@ mod tests {
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
-            out.contains("|     |"),
-            "zero demerits should be blank: {out}"
+            out.contains("|       |"),
+            "no penalty should be blank: {out}"
         );
     }
 }

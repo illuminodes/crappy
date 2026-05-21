@@ -11,7 +11,6 @@ pub struct CrapRecord {
     pub complexity: u32,
     pub coverage_pct: f64,
     pub crap_score: f64,
-    pub demerits: u32,
     pub idiom_penalty: f64,
     pub crappy_score: f64,
     pub start_line: u32,
@@ -117,7 +116,6 @@ pub fn compute_crap_scores(
             complexity: func.complexity,
             coverage_pct,
             crap_score: score,
-            demerits,
             idiom_penalty: penalty,
             crappy_score: crappy,
             start_line: func.start_line,
@@ -299,7 +297,6 @@ mod tests {
             start_line: 1,
             end_line: 10,
             demerits: 5,
-            violations: vec![],
         }];
 
         let records = compute_crap_scores(vec![], comp, idioms, Path::new("/proj"));

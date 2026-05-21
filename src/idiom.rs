@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{BinOp, Expr, FnArg, Item, Pat, ReturnType, Type};
 
@@ -28,19 +27,12 @@ impl IdiomCheck {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct IdiomViolation {
-    pub check: IdiomCheck,
-    pub line: u32,
-}
-
 pub struct FunctionIdioms {
     pub file: PathBuf,
     pub qualified_name: String,
     pub start_line: u32,
     pub end_line: u32,
     pub demerits: u32,
-    pub violations: Vec<IdiomViolation>,
 }
 
 struct IdiomFileVisitor {
@@ -82,24 +74,21 @@ impl IdiomFileVisitor {
         let start_line = sig.ident.span().start().line as u32;
         let end_line = block.brace_token.span.close().end().line as u32;
 
-        let mut violations = Vec::new();
+        let mut checks = Vec::new();
 
-        if is_free && let Some(v) = check_free_method_candidate(sig, &self.struct_names, start_line)
-        {
-            violations.push(v);
+        if is_free && is_free_method_candidate(sig, &self.struct_names) {
+            checks.push(IdiomCheck::FreeMethodCandidate);
         }
 
-        if let Some(v) = check_box_dyn_error(&sig.output, start_line) {
-            violations.push(v);
+        if has_box_dyn_error(&sig.output) {
+            checks.push(IdiomCheck::BoxDynError);
         }
 
-        let mut body_checker = IdiomBodyChecker {
-            violations: Vec::new(),
-        };
+        let mut body_checker = IdiomBodyChecker { checks: Vec::new() };
         body_checker.visit_block(block);
-        violations.extend(body_checker.violations);
+        checks.extend(body_checker.checks);
 
-        let demerits: u32 = violations.iter().map(|v| v.check.weight()).sum();
+        let demerits: u32 = checks.iter().map(|c| c.weight()).sum();
 
         self.functions.push(FunctionIdioms {
             file: self.file.clone(),
@@ -107,7 +96,6 @@ impl IdiomFileVisitor {
             start_line,
             end_line,
             demerits,
-            violations,
         });
     }
 }
@@ -169,7 +157,7 @@ impl<'ast> Visit<'ast> for IdiomFileVisitor {
 // --- Body checker (per-function) ---
 
 struct IdiomBodyChecker {
-    violations: Vec<IdiomViolation>,
+    checks: Vec<IdiomCheck>,
 }
 
 impl<'ast> Visit<'ast> for IdiomBodyChecker {
@@ -180,10 +168,7 @@ impl<'ast> Visit<'ast> for IdiomBodyChecker {
             .filter(|arm| is_literal_pattern(&arm.pat))
             .count();
         if literal_arms >= 2 {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::MatchOnLiteral,
-                line: node.match_token.span.start().line as u32,
-            });
+            self.checks.push(IdiomCheck::MatchOnLiteral);
         }
         syn::visit::visit_expr_match(self, node);
     }
@@ -192,52 +177,34 @@ impl<'ast> Visit<'ast> for IdiomBodyChecker {
         if is_comparison_or_arithmetic(&node.op)
             && (is_numeric_cast(&node.left) || is_numeric_cast(&node.right))
         {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::PrimitiveCastInComparison,
-                line: node.left.span().start().line as u32,
-            });
+            self.checks.push(IdiomCheck::PrimitiveCastInComparison);
         }
         syn::visit::visit_expr_binary(self, node);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         if node.method == "unwrap" {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::Unwrap,
-                line: node.method.span().start().line as u32,
-            });
+            self.checks.push(IdiomCheck::Unwrap);
         }
         if node.method == "from_iter" {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::FromIterInsteadOfCollect,
-                line: node.method.span().start().line as u32,
-            });
+            self.checks.push(IdiomCheck::FromIterInsteadOfCollect);
         }
         syn::visit::visit_expr_method_call(self, node);
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if is_call_to_name(&node.func, "drop") {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::ExplicitDrop,
-                line: node.func.span().start().line as u32,
-            });
+            self.checks.push(IdiomCheck::ExplicitDrop);
         }
         if is_call_to_name(&node.func, "from_iter") {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::FromIterInsteadOfCollect,
-                line: node.func.span().start().line as u32,
-            });
+            self.checks.push(IdiomCheck::FromIterInsteadOfCollect);
         }
         syn::visit::visit_expr_call(self, node);
     }
 
     fn visit_expr_macro(&mut self, node: &'ast syn::ExprMacro) {
         if node.mac.path.is_ident("vec") && node.mac.tokens.is_empty() {
-            self.violations.push(IdiomViolation {
-                check: IdiomCheck::EmptyVecMacro,
-                line: node.mac.path.span().start().line as u32,
-            });
+            self.checks.push(IdiomCheck::EmptyVecMacro);
         }
         syn::visit::visit_expr_macro(self, node);
     }
@@ -247,25 +214,11 @@ impl<'ast> Visit<'ast> for IdiomBodyChecker {
 
 // --- Check helpers ---
 
-fn check_free_method_candidate(
-    sig: &syn::Signature,
-    struct_names: &HashSet<String>,
-    line: u32,
-) -> Option<IdiomViolation> {
-    let first_arg = sig.inputs.first()?;
-    let FnArg::Typed(pat_type) = first_arg else {
-        return None;
+fn is_free_method_candidate(sig: &syn::Signature, struct_names: &HashSet<String>) -> bool {
+    let Some(FnArg::Typed(pat_type)) = sig.inputs.first() else {
+        return false;
     };
-
-    let type_name = extract_ref_type_name(&pat_type.ty)?;
-    if struct_names.contains(&type_name) {
-        Some(IdiomViolation {
-            check: IdiomCheck::FreeMethodCandidate,
-            line,
-        })
-    } else {
-        None
-    }
+    extract_ref_type_name(&pat_type.ty).is_some_and(|name| struct_names.contains(&name))
 }
 
 fn extract_ref_type_name(ty: &Type) -> Option<String> {
@@ -277,55 +230,45 @@ fn extract_ref_type_name(ty: &Type) -> Option<String> {
     None
 }
 
-fn check_box_dyn_error(output: &ReturnType, line: u32) -> Option<IdiomViolation> {
+fn has_box_dyn_error(output: &ReturnType) -> bool {
     let ReturnType::Type(_, ty) = output else {
-        return None;
+        return false;
     };
-    if contains_box_dyn_error(ty) {
-        Some(IdiomViolation {
-            check: IdiomCheck::BoxDynError,
-            line,
-        })
-    } else {
-        None
-    }
+    contains_box_dyn_error(ty)
 }
 
 fn contains_box_dyn_error(ty: &Type) -> bool {
-    match ty {
-        Type::Path(tp) => {
-            let seg = tp.path.segments.last();
-            if let Some(seg) = seg {
-                if seg.ident == "Box"
-                    && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-                {
-                    for arg in &args.args {
-                        if let syn::GenericArgument::Type(Type::TraitObject(obj)) = arg {
-                            for bound in &obj.bounds {
-                                if let syn::TypeParamBound::Trait(t) = bound
-                                    && let Some(last) = t.path.segments.last()
-                                    && last.ident == "Error"
-                                {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                    for arg in &args.args {
-                        if let syn::GenericArgument::Type(inner) = arg
-                            && contains_box_dyn_error(inner)
-                        {
-                            return true;
-                        }
-                    }
-                }
+    let Type::Path(tp) = ty else { return false };
+    let Some(seg) = tp.path.segments.last() else {
+        return false;
+    };
+
+    if seg.ident == "Box"
+        && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+    {
+        for arg in &args.args {
+            if let syn::GenericArgument::Type(Type::TraitObject(obj)) = arg
+                && obj.bounds.iter().any(|b| {
+                    matches!(b, syn::TypeParamBound::Trait(t)
+                            if t.path.segments.last().is_some_and(|s| s.ident == "Error"))
+                })
+            {
+                return true;
             }
-            false
         }
-        _ => false,
     }
+
+    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+        for arg in &args.args {
+            if let syn::GenericArgument::Type(inner) = arg
+                && contains_box_dyn_error(inner)
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn is_literal_pattern(pat: &Pat) -> bool {
@@ -396,183 +339,197 @@ pub fn analyze_idioms_for_file(file: &std::path::Path, syntax: &syn::File) -> Ve
 mod tests {
     use super::*;
 
-    fn idioms(source: &str) -> Vec<(String, u32, Vec<IdiomCheck>)> {
+    fn demerits_for(source: &str) -> u32 {
+        let syntax = syn::parse_file(source).expect("test source must parse");
+        let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
+        assert_eq!(
+            results.len(),
+            1,
+            "expected 1 function, got {}",
+            results.len()
+        );
+        results[0].demerits
+    }
+
+    fn all_demerits(source: &str) -> Vec<(String, u32)> {
         let syntax = syn::parse_file(source).expect("test source must parse");
         let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
         results
             .into_iter()
-            .map(|f| {
-                let checks: Vec<_> = f.violations.iter().map(|v| v.check).collect();
-                (f.qualified_name, f.demerits, checks)
-            })
+            .map(|f| (f.qualified_name, f.demerits))
             .collect()
     }
 
-    fn checks_for(source: &str) -> Vec<IdiomCheck> {
-        let r = idioms(source);
-        assert_eq!(r.len(), 1, "expected 1 function, got {}", r.len());
-        r[0].2.clone()
-    }
-
-    // --- Check 1: Free method candidate ---
+    // --- Check 1: Free method candidate (weight 2) ---
 
     #[test]
     fn free_fn_with_struct_ref_param() {
-        let c = checks_for("struct Foo; fn do_thing(f: &Foo) {}");
-        assert!(c.contains(&IdiomCheck::FreeMethodCandidate));
+        assert_eq!(demerits_for("struct Foo; fn do_thing(f: &Foo) {}"), 2);
     }
 
     #[test]
     fn free_fn_with_mut_struct_ref_param() {
-        let c = checks_for("struct Bar; fn do_thing(b: &mut Bar) {}");
-        assert!(c.contains(&IdiomCheck::FreeMethodCandidate));
+        assert_eq!(demerits_for("struct Bar; fn do_thing(b: &mut Bar) {}"), 2);
     }
 
     #[test]
     fn free_fn_with_primitive_param_is_clean() {
-        let c = checks_for("fn add(a: i32, b: i32) -> i32 { a + b }");
-        assert!(!c.contains(&IdiomCheck::FreeMethodCandidate));
+        assert_eq!(demerits_for("fn add(a: i32, b: i32) -> i32 { a + b }"), 0);
     }
 
     #[test]
     fn method_not_flagged() {
-        let c = checks_for("struct S; impl S { fn method(&self) {} }");
-        assert!(!c.contains(&IdiomCheck::FreeMethodCandidate));
+        assert_eq!(demerits_for("struct S; impl S { fn method(&self) {} }"), 0);
     }
 
     #[test]
     fn free_fn_with_unknown_struct_not_flagged() {
-        let c = checks_for("fn process(f: &SomeExternalType) {}");
-        assert!(!c.contains(&IdiomCheck::FreeMethodCandidate));
+        assert_eq!(demerits_for("fn process(f: &SomeExternalType) {}"), 0);
     }
 
-    // --- Check 2: Match on literals ---
+    // --- Check 2: Match on literals (weight 2) ---
 
     #[test]
     fn match_on_ints() {
-        let c = checks_for("fn f(x: i32) { match x { 1 => {}, 2 => {}, _ => {} } }");
-        assert!(c.contains(&IdiomCheck::MatchOnLiteral));
+        assert_eq!(
+            demerits_for("fn f(x: i32) { match x { 1 => {}, 2 => {}, _ => {} } }"),
+            2
+        );
     }
 
     #[test]
     fn match_on_strings() {
-        let c = checks_for("fn f(x: &str) { match x { \"a\" => {}, \"b\" => {}, _ => {} } }");
-        assert!(c.contains(&IdiomCheck::MatchOnLiteral));
+        assert_eq!(
+            demerits_for("fn f(x: &str) { match x { \"a\" => {}, \"b\" => {}, _ => {} } }"),
+            2
+        );
     }
 
     #[test]
     fn match_on_single_literal_not_flagged() {
-        let c = checks_for("fn f(x: i32) { match x { 1 => {}, _ => {} } }");
-        assert!(!c.contains(&IdiomCheck::MatchOnLiteral));
+        assert_eq!(
+            demerits_for("fn f(x: i32) { match x { 1 => {}, _ => {} } }"),
+            0
+        );
     }
 
     #[test]
     fn match_on_enum_variants_clean() {
-        let c = checks_for("enum E { A, B } fn f(e: E) { match e { E::A => {}, E::B => {} } }");
-        assert!(!c.contains(&IdiomCheck::MatchOnLiteral));
+        assert_eq!(
+            demerits_for("enum E { A, B } fn f(e: E) { match e { E::A => {}, E::B => {} } }"),
+            0
+        );
     }
 
-    // --- Check 3: Primitive cast in comparison ---
+    // --- Check 3: Primitive cast in comparison (weight 2) ---
 
     #[test]
     fn cast_in_comparison() {
-        let c = checks_for("fn f(x: u32, y: u64) -> bool { x as u64 > y }");
-        assert!(c.contains(&IdiomCheck::PrimitiveCastInComparison));
+        assert_eq!(
+            demerits_for("fn f(x: u32, y: u64) -> bool { x as u64 > y }"),
+            2
+        );
     }
 
     #[test]
     fn cast_in_arithmetic() {
-        let c = checks_for("fn f(x: u32) -> u64 { x as u64 + 1 }");
-        assert!(c.contains(&IdiomCheck::PrimitiveCastInComparison));
+        assert_eq!(demerits_for("fn f(x: u32) -> u64 { x as u64 + 1 }"), 2);
     }
 
     #[test]
     fn cast_for_indexing_not_flagged() {
-        let c = checks_for("fn f(v: &[u8], i: u32) -> u8 { v[i as usize] }");
-        assert!(!c.contains(&IdiomCheck::PrimitiveCastInComparison));
+        assert_eq!(
+            demerits_for("fn f(v: &[u8], i: u32) -> u8 { v[i as usize] }"),
+            0
+        );
     }
 
-    // --- Check 4: .unwrap() ---
+    // --- Check 4: .unwrap() (weight 1) ---
 
     #[test]
     fn unwrap_detected() {
-        let c = checks_for("fn f() { let _ = Some(1).unwrap(); }");
-        assert!(c.contains(&IdiomCheck::Unwrap));
+        assert_eq!(demerits_for("fn f() { let _ = Some(1).unwrap(); }"), 1);
     }
 
     #[test]
     fn expect_not_flagged() {
-        let c = checks_for("fn f() { let _ = Some(1).expect(\"msg\"); }");
-        assert!(!c.contains(&IdiomCheck::Unwrap));
+        assert_eq!(
+            demerits_for("fn f() { let _ = Some(1).expect(\"msg\"); }"),
+            0
+        );
     }
 
-    // --- Check 5: Explicit drop() ---
+    // --- Check 5: Explicit drop() (weight 1) ---
 
     #[test]
     fn explicit_drop() {
-        let c = checks_for("fn f() { let x = 1; drop(x); }");
-        assert!(c.contains(&IdiomCheck::ExplicitDrop));
+        assert_eq!(demerits_for("fn f() { let x = 1; drop(x); }"), 1);
     }
 
-    // --- Check 6: vec![] ---
+    // --- Check 6: vec![] (weight 1) ---
 
     #[test]
     fn empty_vec_macro() {
-        let c = checks_for("fn f() { let _: Vec<i32> = vec![]; }");
-        assert!(c.contains(&IdiomCheck::EmptyVecMacro));
+        assert_eq!(demerits_for("fn f() { let _: Vec<i32> = vec![]; }"), 1);
     }
 
     #[test]
     fn vec_with_elements_clean() {
-        let c = checks_for("fn f() { let _ = vec![1, 2]; }");
-        assert!(!c.contains(&IdiomCheck::EmptyVecMacro));
+        assert_eq!(demerits_for("fn f() { let _ = vec![1, 2]; }"), 0);
     }
 
-    // --- Check 7: from_iter ---
+    // --- Check 7: from_iter (weight 1) ---
 
     #[test]
     fn from_iter_method_call() {
-        let c = checks_for("fn f() { let _: Vec<i32> = Vec::from_iter([1, 2].iter().copied()); }");
-        assert!(c.contains(&IdiomCheck::FromIterInsteadOfCollect));
+        assert_eq!(
+            demerits_for("fn f() { let _: Vec<i32> = Vec::from_iter([1, 2].iter().copied()); }"),
+            1
+        );
     }
 
-    // --- Check 8: Box<dyn Error> ---
+    // --- Check 8: Box<dyn Error> (weight 1) ---
 
     #[test]
     fn box_dyn_error_in_return() {
-        let c = checks_for("fn f() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }");
-        assert!(c.contains(&IdiomCheck::BoxDynError));
+        assert_eq!(
+            demerits_for("fn f() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }"),
+            1
+        );
     }
 
     #[test]
     fn box_dyn_error_short_path() {
-        let c = checks_for("fn f() -> Result<(), Box<dyn Error>> { Ok(()) }");
-        assert!(c.contains(&IdiomCheck::BoxDynError));
+        assert_eq!(
+            demerits_for("fn f() -> Result<(), Box<dyn Error>> { Ok(()) }"),
+            1
+        );
     }
 
     #[test]
     fn concrete_error_type_clean() {
-        let c = checks_for("struct MyError; fn f() -> Result<(), MyError> { Ok(()) }");
-        assert!(!c.contains(&IdiomCheck::BoxDynError));
+        assert_eq!(
+            demerits_for("struct MyError; fn f() -> Result<(), MyError> { Ok(()) }"),
+            0
+        );
     }
 
     // --- Closure isolation ---
 
     #[test]
     fn unwrap_in_closure_not_counted() {
-        let c = checks_for("fn f() { let _ = || Some(1).unwrap(); }");
-        assert!(!c.contains(&IdiomCheck::Unwrap));
+        assert_eq!(demerits_for("fn f() { let _ = || Some(1).unwrap(); }"), 0);
     }
 
-    // --- Multiple violations in one function ---
+    // --- Accumulation ---
 
     #[test]
     fn multiple_violations_accumulate() {
-        let r = idioms("fn f() { let _ = Some(1).unwrap(); let _ = Some(2).unwrap(); drop(3); }");
-        assert_eq!(r[0].1, 3); // 1+1+1
+        // 2x unwrap (1+1) + 1x drop (1) = 3
+        let r =
+            all_demerits("fn f() { let _ = Some(1).unwrap(); let _ = Some(2).unwrap(); drop(3); }");
+        assert_eq!(r[0].1, 3);
     }
-
-    // --- Weight calculation ---
 
     #[test]
     fn high_weight_checks() {
@@ -590,12 +547,8 @@ mod tests {
         assert_eq!(IdiomCheck::BoxDynError.weight(), 1);
     }
 
-    // --- Clean function ---
-
     #[test]
     fn clean_function_zero_demerits() {
-        let r = idioms("fn add(a: i32, b: i32) -> i32 { a + b }");
-        assert_eq!(r[0].1, 0);
-        assert!(r[0].2.is_empty());
+        assert_eq!(demerits_for("fn add(a: i32, b: i32) -> i32 { a + b }"), 0);
     }
 }

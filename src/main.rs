@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn from_io_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "x");
+        let io_err = std::io::Error::other("x");
         let e: Error = io_err.into();
         assert!(matches!(e, Error::Io(_)));
     }
