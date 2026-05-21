@@ -680,4 +680,104 @@ mod tests {
     fn clean_function_zero_demerits() {
         assert_eq!(demerits_for("fn add(a: i32, b: i32) -> i32 { a + b }"), 0);
     }
+
+    // --- Trait context ---
+
+    #[test]
+    fn trait_default_method_checked() {
+        let r = all_demerits("trait T { fn default_impl(&self) { let _ = Some(1).unwrap(); } }");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "T::default_impl");
+        assert_eq!(r[0].1, 1);
+    }
+
+    #[test]
+    fn trait_method_without_body_skipped() {
+        let r = all_demerits("trait T { fn abstract_method(&self); } fn f() {}");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "f");
+    }
+
+    // --- cfg(test) module skipping ---
+
+    #[test]
+    fn cfg_test_module_skipped() {
+        let r = all_demerits(
+            "fn visible() { let _ = Some(1).unwrap(); }
+             #[cfg(test)] mod tests { fn hidden() { let _ = Some(1).unwrap(); } }",
+        );
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "visible");
+    }
+
+    // --- Match on char literals ---
+
+    #[test]
+    fn match_on_chars() {
+        assert_eq!(
+            demerits_for("fn f(c: char) { match c { 'a' => {}, 'b' => {}, _ => {} } }"),
+            2
+        );
+    }
+
+    // --- Match with Or patterns ---
+
+    #[test]
+    fn match_or_pattern_with_literals() {
+        assert_eq!(
+            demerits_for("fn f(x: i32) { match x { 1 | 2 => {}, 3 | 4 => {}, _ => {} } }"),
+            2
+        );
+    }
+
+    // --- from_iter as function call ---
+
+    #[test]
+    fn from_iter_function_call() {
+        assert_eq!(
+            demerits_for(
+                "fn f() { let _: Vec<i32> = std::iter::FromIterator::from_iter(vec![1]); }"
+            ),
+            1
+        );
+    }
+
+    // --- Box<dyn Error + Send + Sync> ---
+
+    #[test]
+    fn box_dyn_error_with_send_sync() {
+        assert_eq!(
+            demerits_for("fn f() -> Result<(), Box<dyn Error + Send + Sync>> { Ok(()) }"),
+            1
+        );
+    }
+
+    // --- Fingerprint tests ---
+
+    #[test]
+    fn sig_fingerprint_includes_impl_context() {
+        let syntax = syn::parse_file(
+            "struct A; struct B; impl A { fn m(&self) {} } impl B { fn m(&self) {} }",
+        )
+        .unwrap();
+        let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
+        assert_eq!(results.len(), 2);
+        assert_ne!(results[0].sig_fingerprint, results[1].sig_fingerprint);
+    }
+
+    #[test]
+    fn body_fingerprint_same_structure() {
+        let syntax =
+            syn::parse_file("fn a(x: bool) { if x { } } fn b(y: bool) { if y { } }").unwrap();
+        let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
+        assert_eq!(results[0].body_fingerprint, results[1].body_fingerprint);
+    }
+
+    #[test]
+    fn body_fingerprint_different_structure() {
+        let syntax =
+            syn::parse_file("fn a(x: bool) { if x { } } fn b() { loop { break; } }").unwrap();
+        let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
+        assert_ne!(results[0].body_fingerprint, results[1].body_fingerprint);
+    }
 }
