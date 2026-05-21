@@ -72,7 +72,7 @@ fn arg_error(msg: &str) -> Error {
 fn parse_flag_value<'a>(args: &'a [String], i: &mut usize, name: &str) -> Result<&'a str, Error> {
     *i += 1;
     args.get(*i)
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
         .ok_or_else(|| arg_error(&format!("{name} requires a value")))
 }
 
@@ -150,7 +150,7 @@ pub(crate) fn analyze(
     let (comp, idioms) = complexity::analyze_all(project_dir)?;
     eprintln!("  {} functions analyzed", comp.len());
 
-    let records = scoring::compute_crap_scores(cov, comp, idioms, project_dir);
+    let records = scoring::compute_crap_scores(cov, &comp, idioms, project_dir);
     eprintln!("  {} functions scored\n", records.len());
 
     report::print_report(&records, opts);
@@ -195,7 +195,7 @@ mod tests {
     use super::*;
 
     fn args(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| s.to_string()).collect()
+        strs.iter().map(|s| (*s).to_string()).collect()
     }
 
     #[test]
@@ -346,11 +346,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // spawns cargo test — conflicts with outer coverage instrumentation
+    #[ignore = "spawns cargo test — conflicts with outer coverage instrumentation"]
     fn collect_coverage_on_temp_project() {
         let dir = create_temp_project(
             "cov",
-            r#"
+            r"
 pub fn add(a: i32, b: i32) -> i32 { a + b }
 pub fn unused(x: i32) -> i32 { if x > 0 { x } else { -x } }
 #[cfg(test)]
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn test_add() { assert_eq!(super::add(1, 2), 3); }
 }
-"#,
+",
         );
 
         let cov = coverage::collect_coverage(&dir).unwrap();
@@ -377,11 +377,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // spawns cargo test — conflicts with outer coverage instrumentation
+    #[ignore = "spawns cargo test — conflicts with outer coverage instrumentation"]
     fn analyze_full_pipeline() {
         let dir = create_temp_project(
             "full",
-            r#"
+            r"
 pub fn covered() -> i32 { 42 }
 pub fn branchy(x: bool) -> i32 { if x { 1 } else { 2 } }
 #[cfg(test)]
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn test_covered() { assert_eq!(super::covered(), 42); }
 }
-"#,
+",
         );
 
         let opts = Opts {

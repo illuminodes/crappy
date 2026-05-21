@@ -82,12 +82,12 @@ impl FileVisitor {
             format!("{}::{name}", self.context.last().unwrap())
         };
 
-        let start_line = sig.ident.span().start().line as u32;
+        let start_line = line_u32(sig.ident.span().start().line);
 
         let mut counter = BranchCounter { count: 1 };
         counter.visit_block(block);
 
-        let end_line = sig.ident.span().end().line as u32;
+        let end_line = line_u32(sig.ident.span().end().line);
         let block_end = block_end_line(block);
         let end = end_line.max(block_end);
 
@@ -149,15 +149,19 @@ impl<'ast> Visit<'ast> for BranchCounter {
     }
 }
 
-fn block_end_line(block: &syn::Block) -> u32 {
-    block.brace_token.span.close().end().line as u32
+fn line_u32(line: usize) -> u32 {
+    u32::try_from(line).unwrap_or(u32::MAX)
 }
 
-pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+fn block_end_line(block: &syn::Block) -> u32 {
+    line_u32(block.brace_token.span.close().end().line)
+}
+
+pub fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| a.path().is_ident("test"))
 }
 
-pub(crate) fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
+pub fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         if !a.path().is_ident("cfg") {
             return false;
@@ -169,18 +173,17 @@ pub(crate) fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
-pub(crate) fn format_type(ty: &syn::Type) -> String {
+pub fn format_type(ty: &syn::Type) -> String {
     match ty {
         syn::Type::Path(tp) => format_path(&tp.path),
         _ => "_".to_string(),
     }
 }
 
-pub(crate) fn format_path(path: &syn::Path) -> String {
+pub fn format_path(path: &syn::Path) -> String {
     path.segments
         .last()
-        .map(|s| s.ident.to_string())
-        .unwrap_or_else(|| "_".to_string())
+        .map_or_else(|| "_".to_string(), |s| s.ident.to_string())
 }
 
 fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {

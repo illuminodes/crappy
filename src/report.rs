@@ -9,16 +9,14 @@ pub fn print_report(records: &[CrapRecord], opts: &Opts) {
     write_report(&mut out, records, opts).unwrap();
 }
 
-pub(crate) fn write_report(
+pub fn write_report(
     out: &mut impl Write,
     records: &[CrapRecord],
     opts: &Opts,
 ) -> std::io::Result<()> {
-    let display: &[CrapRecord] = if let Some(n) = opts.top {
-        &records[..n.min(records.len())]
-    } else {
-        records
-    };
+    let display: &[CrapRecord] = opts
+        .top
+        .map_or(records, |n| &records[..n.min(records.len())]);
 
     if display.is_empty() {
         writeln!(out, "No functions to report.")?;
@@ -160,8 +158,8 @@ mod tests {
         };
         write_report(&mut buf, &records, &opts).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("a"));
-        assert!(out.contains("b"));
+        assert!(out.contains('a'));
+        assert!(out.contains('b'));
         assert!(!out.contains(" c"));
         assert!(out.contains("Total functions: 3"));
     }

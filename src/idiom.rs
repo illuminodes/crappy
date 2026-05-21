@@ -19,7 +19,7 @@ pub enum IdiomCheck {
 }
 
 impl IdiomCheck {
-    pub fn weight(self) -> u32 {
+    pub const fn weight(self) -> u32 {
         match self {
             Self::FreeMethodCandidate | Self::MatchOnLiteral | Self::PrimitiveCastInComparison => 2,
             _ => 1,
@@ -275,7 +275,7 @@ fn is_literal_pattern(pat: &Pat) -> bool {
     }
 }
 
-fn is_comparison_or_arithmetic(op: &BinOp) -> bool {
+const fn is_comparison_or_arithmetic(op: &BinOp) -> bool {
     matches!(
         op,
         BinOp::Lt(_)

@@ -103,7 +103,7 @@ fn threshold_exit_code() {
 
     fs::write(
         dir.join("src/lib.rs"),
-        r#"
+        r"
 pub fn simple() -> i32 { 42 }
 
 #[cfg(test)]
@@ -113,7 +113,7 @@ mod tests {
         assert_eq!(super::simple(), 42);
     }
 }
-"#,
+",
     )
     .unwrap();
 

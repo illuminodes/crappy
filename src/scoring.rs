@@ -16,17 +16,17 @@ pub struct CrapRecord {
     pub start_line: u32,
 }
 
-pub(crate) fn crap_score(complexity: u32, coverage_pct: f64) -> f64 {
+pub fn crap_score(complexity: u32, coverage_pct: f64) -> f64 {
     let comp = f64::from(complexity);
     let cov = coverage_pct / 100.0;
-    comp * comp * (1.0 - cov).powi(3) + comp
+    (comp * comp).mul_add((1.0 - cov).powi(3), comp)
 }
 
-pub(crate) fn idiom_penalty(demerits: u32) -> f64 {
-    1.0 + f64::from(demerits) * 0.25
+pub fn idiom_penalty(demerits: u32) -> f64 {
+    f64::from(demerits).mul_add(0.25, 1.0)
 }
 
-pub(crate) fn overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> u32 {
+pub fn overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> u32 {
     if a_start > b_end || b_start > a_end {
         return 0;
     }
@@ -35,7 +35,7 @@ pub(crate) fn overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> u32
 
 pub fn compute_crap_scores(
     coverage: Vec<FunctionCoverage>,
-    complexity: Vec<FunctionComplexity>,
+    complexity: &[FunctionComplexity],
     idioms: Vec<FunctionIdioms>,
     project_dir: &Path,
 ) -> Vec<CrapRecord> {
@@ -74,7 +74,7 @@ pub fn compute_crap_scores(
 
     let mut records = Vec::new();
 
-    for func in &complexity {
+    for func in complexity {
         let rel_path = func
             .file
             .strip_prefix(&project_prefix)
@@ -99,7 +99,7 @@ pub fn compute_crap_scores(
         let score = crap_score(func.complexity, coverage_pct);
 
         let idiom_key = (func.file.clone(), func.qualified_name.clone());
-        let demerits = idiom_map.get(&idiom_key).map(|fi| fi.demerits).unwrap_or(0);
+        let demerits = idiom_map.get(&idiom_key).map_or(0, |fi| fi.demerits);
 
         let penalty = idiom_penalty(demerits);
         let crappy = score * penalty;
@@ -159,7 +159,7 @@ mod tests {
     fn score_monotonically_decreases_with_coverage() {
         let mut prev = crap_score(10, 0.0);
         for cov in (10..=100).step_by(10) {
-            let cur = crap_score(10, cov as f64);
+            let cur = crap_score(10, f64::from(cov));
             assert!(cur <= prev, "cov={cov} cur={cur} prev={prev}");
             prev = cur;
         }
@@ -229,7 +229,7 @@ mod tests {
             complexity: 5,
         }];
 
-        let records = compute_crap_scores(cov, comp, vec![], Path::new("/proj"));
+        let records = compute_crap_scores(cov, &comp, vec![], Path::new("/proj"));
         assert_eq!(records.len(), 1);
         assert!((records[0].coverage_pct - 80.0).abs() < f64::EPSILON);
         assert_eq!(records[0].complexity, 5);
@@ -246,7 +246,7 @@ mod tests {
             complexity: 3,
         }];
 
-        let records = compute_crap_scores(cov, comp, vec![], Path::new("/proj"));
+        let records = compute_crap_scores(cov, &comp, vec![], Path::new("/proj"));
         assert_eq!(records.len(), 1);
         assert!((records[0].coverage_pct).abs() < f64::EPSILON);
         assert!((records[0].crap_score - 12.0).abs() < f64::EPSILON);
@@ -272,7 +272,7 @@ mod tests {
             },
         ];
 
-        let records = compute_crap_scores(cov, comp, vec![], Path::new("/proj"));
+        let records = compute_crap_scores(cov, &comp, vec![], Path::new("/proj"));
         assert_eq!(records[0].name, "high");
         assert_eq!(records[1].name, "low");
     }
@@ -292,7 +292,7 @@ mod tests {
             demerits: 4,
         }];
 
-        let records = compute_crap_scores(vec![], comp, idioms, Path::new("/proj"));
+        let records = compute_crap_scores(vec![], &comp, idioms, Path::new("/proj"));
         // CRAP = 5^2 * 1 + 5 = 30, penalty = 1 + 4*0.25 = 2.0, CRAPPY = 60
         assert!((records[0].crap_score - 30.0).abs() < f64::EPSILON);
         assert!((records[0].crappy_score - 60.0).abs() < f64::EPSILON);
@@ -308,7 +308,7 @@ mod tests {
             complexity: 5,
         }];
 
-        let records = compute_crap_scores(vec![], comp, vec![], Path::new("/proj"));
+        let records = compute_crap_scores(vec![], &comp, vec![], Path::new("/proj"));
         assert!((records[0].crap_score - records[0].crappy_score).abs() < f64::EPSILON);
     }
 }

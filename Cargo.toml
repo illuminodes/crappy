@@ -7,6 +7,12 @@ edition = "2024"
 name = "cargo-crappy"
 path = "src/main.rs"
 
+[lints.clippy]
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }

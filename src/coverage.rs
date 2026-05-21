@@ -57,12 +57,12 @@ bourne::from_json! {
     }
 }
 
-pub(crate) struct LlvmTools {
+pub struct LlvmTools {
     pub profdata: PathBuf,
     pub cov: PathBuf,
 }
 
-pub(crate) fn resolve_llvm_tools(sysroot: &str, host: &str) -> Result<LlvmTools, Error> {
+pub fn resolve_llvm_tools(sysroot: &str, host: &str) -> Result<LlvmTools, Error> {
     let bin_dir = PathBuf::from(sysroot)
         .join("lib")
         .join("rustlib")
@@ -86,11 +86,11 @@ pub(crate) fn resolve_llvm_tools(sysroot: &str, host: &str) -> Result<LlvmTools,
     Ok(LlvmTools { profdata, cov })
 }
 
-pub(crate) fn parse_rustc_host(version_output: &str) -> Option<String> {
+pub fn parse_rustc_host(version_output: &str) -> Option<String> {
     version_output
         .lines()
         .find_map(|l| l.strip_prefix("host: "))
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 fn find_llvm_tools() -> Result<LlvmTools, Error> {
@@ -124,7 +124,7 @@ fn clean_profraw(crappy_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
+pub fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
     let mut binaries = Vec::new();
     for line in stdout.lines() {
         if !line.starts_with('{') {
@@ -180,7 +180,7 @@ fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Erro
     Ok(binaries)
 }
 
-pub(crate) fn collect_profraw(crappy_dir: &Path) -> Result<Vec<PathBuf>, Error> {
+pub fn collect_profraw(crappy_dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut profraw_files = Vec::new();
     for entry in fs::read_dir(crappy_dir)? {
         let path = entry?.path();
@@ -191,7 +191,7 @@ pub(crate) fn collect_profraw(crappy_dir: &Path) -> Result<Vec<PathBuf>, Error> 
     Ok(profraw_files)
 }
 
-pub(crate) fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error> {
+pub fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error> {
     let profraw_files = collect_profraw(crappy_dir)?;
 
     if profraw_files.is_empty() {
@@ -218,7 +218,7 @@ pub(crate) fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<Pat
     Ok(profdata_path)
 }
 
-pub(crate) fn export_coverage(
+pub fn export_coverage(
     tools: &LlvmTools,
     profdata_path: &Path,
     binaries: &[PathBuf],
@@ -241,7 +241,7 @@ pub(crate) fn export_coverage(
     Ok(output.stdout)
 }
 
-pub(crate) fn extract_function_coverage(
+pub fn extract_function_coverage(
     llvm_cov_json: &[u8],
     project_prefix: &Path,
 ) -> Result<Vec<FunctionCoverage>, Error> {
@@ -282,14 +282,18 @@ fn convert_function(func: &LlvmCovFunction, project_prefix: &Path) -> Option<Fun
     })
 }
 
+fn region_u32(val: u64) -> u32 {
+    u32::try_from(val).unwrap_or(u32::MAX)
+}
+
 fn region_span(regions: &[Vec<u64>]) -> Option<(u32, u32)> {
     let mut start = u32::MAX;
     let mut end = 0u32;
 
     for region in regions {
         if region.len() >= 3 {
-            start = start.min(region[0] as u32);
-            end = end.max(region[2] as u32);
+            start = start.min(region_u32(region[0]));
+            end = end.max(region_u32(region[2]));
         }
     }
 
@@ -300,15 +304,15 @@ fn region_span(regions: &[Vec<u64>]) -> Option<(u32, u32)> {
     }
 }
 
-pub(crate) fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
+pub fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
     let mut line_hits: HashMap<u32, u64> = HashMap::new();
 
     for region in regions {
         if region.len() < 5 {
             continue;
         }
-        let start_line = region[0] as u32;
-        let end_line = region[2] as u32;
+        let start_line = region_u32(region[0]);
+        let end_line = region_u32(region[2]);
         let count = region[4];
 
         // Kind is at index 7 if present; 0 = CodeRegion, skip others
@@ -326,9 +330,9 @@ pub(crate) fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
         return 100.0;
     }
 
-    let total = line_hits.len() as f64;
-    let covered = line_hits.values().filter(|&&c| c > 0).count() as f64;
-    (covered / total) * 100.0
+    let total = region_u32(line_hits.len() as u64);
+    let covered = region_u32(line_hits.values().filter(|&&c| c > 0).count() as u64);
+    f64::from(covered) / f64::from(total) * 100.0
 }
 
 pub fn collect_coverage(project_dir: &Path) -> Result<Vec<FunctionCoverage>, Error> {
@@ -496,7 +500,10 @@ not json at all
 
         clean_profraw(&dir).unwrap();
 
-        let remaining: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
+        let remaining: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .collect();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].file_name(), "keep.profdata");
         let _ = fs::remove_dir_all(&dir);
