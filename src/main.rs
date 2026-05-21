@@ -250,4 +250,75 @@ mod tests {
         let a = args(&["--threshold", "abc"]);
         assert!(parse_args_from(&a).is_err());
     }
+
+    #[test]
+    fn display_command_error() {
+        use std::os::unix::process::ExitStatusExt;
+        let e = Error::Command {
+            tool: "cargo test",
+            status: std::process::ExitStatus::from_raw(256), // exit code 1
+        };
+        let msg = format!("{e}");
+        assert!(msg.contains("cargo test"));
+    }
+
+    #[test]
+    fn display_tool_not_found() {
+        let e = Error::ToolNotFound {
+            tool: "llvm-cov".into(),
+        };
+        let msg = format!("{e}");
+        assert!(msg.contains("llvm-cov"));
+        assert!(msg.contains("rustup component add llvm-tools"));
+    }
+
+    #[test]
+    fn display_io_error() {
+        let e = Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(format!("{e}").contains("gone"));
+    }
+
+    #[test]
+    fn display_json_error() {
+        let err = bourne::parse::<bool>(b"not json").unwrap_err();
+        let e = Error::Json(err);
+        assert!(!format!("{e}").is_empty());
+    }
+
+    #[test]
+    fn display_syn_error() {
+        let err = syn::parse_file("fn {")
+            .map(|_| ())
+            .expect_err("should fail");
+        let e = Error::Syn {
+            file: PathBuf::from("test.rs"),
+            error: err,
+        };
+        let msg = format!("{e}");
+        assert!(msg.contains("test.rs"));
+    }
+
+    #[test]
+    fn display_no_test_binaries() {
+        assert!(format!("{}", Error::NoTestBinaries).contains("no test binaries"));
+    }
+
+    #[test]
+    fn display_no_profraw() {
+        assert!(format!("{}", Error::NoProfrawFiles).contains("profraw"));
+    }
+
+    #[test]
+    fn from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "x");
+        let e: Error = io_err.into();
+        assert!(matches!(e, Error::Io(_)));
+    }
+
+    #[test]
+    fn from_bourne_error() {
+        let b_err = bourne::parse::<bool>(b"bad").unwrap_err();
+        let e: Error = b_err.into();
+        assert!(matches!(e, Error::Json(_)));
+    }
 }

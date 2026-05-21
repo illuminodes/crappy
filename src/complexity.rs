@@ -365,4 +365,84 @@ mod tests {
         // 1 base + if + && + 3 arms + for + ?
         assert_eq!(r[0].1, 8);
     }
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("crappy-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn collect_rs_files_finds_nested() {
+        let dir = tmpdir("nested");
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(dir.join("a.rs"), "").unwrap();
+        fs::write(sub.join("b.rs"), "").unwrap();
+        fs::write(dir.join("c.txt"), "").unwrap();
+
+        let mut files = Vec::new();
+        collect_rs_files(&dir, &mut files).unwrap();
+        files.sort();
+
+        assert_eq!(files.len(), 2);
+        assert!(files[0].ends_with("a.rs"));
+        assert!(files[1].ends_with("b.rs"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_rs_files_skips_target_and_git() {
+        let dir = tmpdir("skip");
+        fs::create_dir_all(dir.join("target")).unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::write(dir.join("target/bad.rs"), "").unwrap();
+        fs::write(dir.join(".git/bad.rs"), "").unwrap();
+        fs::write(dir.join("good.rs"), "").unwrap();
+
+        let mut files = Vec::new();
+        collect_rs_files(&dir, &mut files).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("good.rs"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn analyze_complexity_on_temp_project() {
+        let dir = tmpdir("proj");
+        let src = dir.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("lib.rs"),
+            "fn simple() {} fn branchy(x: bool) { if x {} }",
+        )
+        .unwrap();
+
+        let result = analyze_complexity(&dir).unwrap();
+        assert_eq!(result.len(), 2);
+
+        let simple = result
+            .iter()
+            .find(|f| f.qualified_name == "simple")
+            .unwrap();
+        assert_eq!(simple.complexity, 1);
+
+        let branchy = result
+            .iter()
+            .find(|f| f.qualified_name == "branchy")
+            .unwrap();
+        assert_eq!(branchy.complexity, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn analyze_complexity_no_src_dir() {
+        let dir = tmpdir("nosrc");
+        let result = analyze_complexity(&dir).unwrap();
+        assert!(result.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

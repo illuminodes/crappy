@@ -427,4 +427,63 @@ not json at all
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file, PathBuf::from("/proj/src/lib.rs"));
     }
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("crappy-cov-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn clean_profraw_removes_profraw_files() {
+        let dir = tmpdir("rm");
+        fs::write(dir.join("a.profraw"), "").unwrap();
+        fs::write(dir.join("b.profraw"), "").unwrap();
+        fs::write(dir.join("keep.profdata"), "").unwrap();
+
+        clean_profraw(&dir).unwrap();
+
+        let remaining: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].file_name(), "keep.profdata");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_profraw_creates_missing_dir() {
+        let dir = tmpdir("mkdir").join("nonexistent");
+        assert!(!dir.exists());
+
+        clean_profraw(&dir).unwrap();
+
+        assert!(dir.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_profraw_empty_dir_is_ok() {
+        let dir = tmpdir("empty");
+        clean_profraw(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_skips_empty_regions() {
+        let json = br#"{"data":[{"functions":[
+            {"name":"f","filenames":["/proj/src/lib.rs"],"regions":[],"count":0}
+        ]}]}"#;
+        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn extract_skips_no_filenames() {
+        let json = br#"{"data":[{"functions":[
+            {"name":"f","filenames":[],"regions":[[1,1,5,1,1,0,0,0]],"count":1}
+        ]}]}"#;
+        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
+        assert!(results.is_empty());
+    }
 }
