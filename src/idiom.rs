@@ -87,7 +87,7 @@ impl IdiomFileVisitor {
         checks.extend(body_checker.checks);
 
         let demerits: u32 = checks.iter().map(|c| c.weight()).sum();
-        let sig_fingerprint = fingerprint_sig(sig);
+        let sig_fingerprint = fingerprint_sig(sig, self.context.last());
         let body_fingerprint = fingerprint_body(block);
 
         self.functions.push(FunctionIdioms {
@@ -331,17 +331,18 @@ fn is_call_to_name(func: &Expr, name: &str) -> bool {
 
 // --- Fingerprinting for dryness checks ---
 
-fn fingerprint_sig(sig: &syn::Signature) -> String {
+fn fingerprint_sig(sig: &syn::Signature, self_type: Option<&String>) -> String {
     let mut parts = Vec::new();
     for input in &sig.inputs {
         match input {
             FnArg::Receiver(r) => {
+                let ty = self_type.map_or("Self", String::as_str);
                 let mutability = if r.mutability.is_some() {
-                    "&mut self"
+                    format!("&mut {ty}")
                 } else {
-                    "&self"
+                    format!("&{ty}")
                 };
-                parts.push(mutability.to_string());
+                parts.push(mutability);
             }
             FnArg::Typed(t) => parts.push(type_fingerprint(&t.ty)),
         }
