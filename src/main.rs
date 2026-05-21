@@ -196,10 +196,13 @@ SCORING:
         - Body duplicate: two functions with identical normalized AST structure
         Both can stack (6 demerits) when a function matches on both signals.
 
+SUPPRESSION:
+    #[crappy_allow]    Annotate a function to exclude it from analysis.
+
 OUTPUT:
     Each function gets a clippy-style diagnostic with its location
     and actionable suggestions based on what contributes to its score.
-    Functions with CRAPPY >= 30 are reported as warnings; others as notes."
+    Functions above the threshold (default 30) are shown as warnings."
     );
 }
 

@@ -1,11 +1,11 @@
-use crate::complexity::{format_path, format_type, has_cfg_test, has_test_attr};
+use crate::complexity::{AttrExt, format_path, format_type};
 
 pub trait FunctionVisitor {
     fn context_mut(&mut self) -> &mut Vec<String>;
     fn on_function(&mut self, name: &str, sig: &syn::Signature, block: &syn::Block, is_free: bool);
 
     fn handle_item_fn(&mut self, node: &syn::ItemFn) -> bool {
-        if has_test_attr(&node.attrs) {
+        if node.attrs.should_skip() {
             return false;
         }
         let name = node.sig.ident.to_string();
@@ -14,7 +14,7 @@ pub trait FunctionVisitor {
     }
 
     fn handle_impl_item_fn(&mut self, node: &syn::ImplItemFn) -> bool {
-        if has_test_attr(&node.attrs) {
+        if node.attrs.should_skip() {
             return false;
         }
         let name = node.sig.ident.to_string();
@@ -45,7 +45,7 @@ pub trait FunctionVisitor {
 
     fn handle_trait_item_fn(&mut self, node: &syn::TraitItemFn) {
         if let Some(block) = &node.default
-            && !has_test_attr(&node.attrs)
+            && !node.attrs.should_skip()
         {
             let name = node.sig.ident.to_string();
             self.on_function(&name, &node.sig, block, false);
@@ -53,7 +53,7 @@ pub trait FunctionVisitor {
     }
 
     fn should_skip_mod(node: &syn::ItemMod) -> bool {
-        has_cfg_test(&node.attrs)
+        node.attrs.has_cfg_test()
     }
 
     fn qualified_name(&self, name: &str) -> String
@@ -195,6 +195,25 @@ mod tests {
     fn cfg_test_module_skipped() {
         let calls = visit("fn visible() {} #[cfg(test)] mod tests { fn hidden() {} }");
         assert_eq!(calls, vec![("visible".into(), true)]);
+    }
+
+    #[test]
+    fn crappy_allow_skips_free_fn() {
+        let calls = visit("#[crappy_allow] fn skip() {} fn keep() {}");
+        assert_eq!(calls, vec![("keep".into(), true)]);
+    }
+
+    #[test]
+    fn crappy_allow_skips_impl_method() {
+        let calls =
+            visit("struct S; impl S { #[crappy_allow] fn skip(&self) {} fn keep(&self) {} }");
+        assert_eq!(calls, vec![("S::keep".into(), false)]);
+    }
+
+    #[test]
+    fn crappy_allow_skips_trait_default() {
+        let calls = visit("trait T { #[crappy_allow] fn skip(&self) {} fn keep(&self) {} }");
+        assert_eq!(calls, vec![("T::keep".into(), false)]);
     }
 
     #[test]

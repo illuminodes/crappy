@@ -149,20 +149,37 @@ fn block_end_line(block: &syn::Block) -> u32 {
     line_u32(block.brace_token.span.close().end().line)
 }
 
-pub fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|a| a.path().is_ident("test"))
+pub trait AttrExt {
+    fn has_test(&self) -> bool;
+    fn has_crappy_allow(&self) -> bool;
+    fn has_cfg_test(&self) -> bool;
+    fn should_skip(&self) -> bool;
 }
 
-pub fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|a| {
-        if !a.path().is_ident("cfg") {
-            return false;
-        }
-        let Ok(nested) = a.parse_args::<syn::Ident>() else {
-            return false;
-        };
-        nested == "test"
-    })
+impl AttrExt for [syn::Attribute] {
+    fn has_test(&self) -> bool {
+        self.iter().any(|a| a.path().is_ident("test"))
+    }
+
+    fn has_crappy_allow(&self) -> bool {
+        self.iter().any(|a| a.path().is_ident("crappy_allow"))
+    }
+
+    fn has_cfg_test(&self) -> bool {
+        self.iter().any(|a| {
+            if !a.path().is_ident("cfg") {
+                return false;
+            }
+            let Ok(nested) = a.parse_args::<syn::Ident>() else {
+                return false;
+            };
+            nested == "test"
+        })
+    }
+
+    fn should_skip(&self) -> bool {
+        self.has_test() || self.has_crappy_allow()
+    }
 }
 
 pub fn format_type(ty: &syn::Type) -> String {
