@@ -219,16 +219,73 @@ fn analyze_source(source: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
+fn find_source_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, Error> {
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(project_dir)
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(vec![project_dir.join("src")]);
+    }
+
+    bourne::from_json! {
+        #[bourne(deny_unknown_fields = false)]
+        struct Meta {
+            packages: Vec<MetaPkg>,
+        }
+    }
+
+    bourne::from_json! {
+        #[bourne(deny_unknown_fields = false)]
+        struct MetaPkg {
+            targets: Vec<MetaTarget>,
+        }
+    }
+
+    bourne::from_json! {
+        #[bourne(deny_unknown_fields = false)]
+        struct MetaTarget {
+            kind: Vec<String>,
+            src_path: String,
+        }
+    }
+
+    let Ok(meta) = bourne::parse::<Meta>(&output.stdout) else {
+        return Ok(vec![project_dir.join("src")]);
+    };
+
+    let mut dirs = Vec::new();
+    for pkg in &meta.packages {
+        for target in &pkg.targets {
+            if target.kind.iter().any(|k| k == "lib" || k == "bin") {
+                let src_path = PathBuf::from(&target.src_path);
+                if let Some(parent) = src_path.parent()
+                    && parent.exists() && !dirs.contains(&parent.to_path_buf()) {
+                        dirs.push(parent.to_path_buf());
+                    }
+            }
+        }
+    }
+
+    if dirs.is_empty() {
+        dirs.push(project_dir.join("src"));
+    }
+
+    Ok(dirs)
+}
+
 pub fn analyze_all(
     project_dir: &Path,
 ) -> Result<(Vec<FunctionComplexity>, Vec<crate::idiom::FunctionIdioms>), Error> {
-    let src_dir = project_dir.join("src");
-    if !src_dir.exists() {
-        return Ok((Vec::new(), Vec::new()));
-    }
+    let source_dirs = find_source_dirs(project_dir)?;
 
     let mut rs_files = Vec::new();
-    collect_rs_files(&src_dir, &mut rs_files)?;
+    for src_dir in &source_dirs {
+        if src_dir.exists() {
+            collect_rs_files(src_dir, &mut rs_files)?;
+        }
+    }
 
     let mut all_complexity = Vec::new();
     let mut all_idioms = Vec::new();
