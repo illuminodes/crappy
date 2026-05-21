@@ -2,6 +2,10 @@
 
 CRAP metric analysis for Rust — clippy-style diagnostics for change-risk, complexity, coverage, and idiomatic code.
 
+> Change Risk Anti-Patterns – a mildly offensive acronym to protect you from deeply offensive code.
+> 
+> *Alberto Savoia - Google Testing Blog, 2011*
+
 ## Install
 
 ```sh
