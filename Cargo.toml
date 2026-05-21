@@ -1,0 +1,14 @@
+[package]
+name = "cargo-crappy"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cargo-crappy"
+path = "src/main.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
