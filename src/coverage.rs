@@ -117,6 +117,26 @@ fn clean_profraw(crappy_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+pub(crate) fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
+    let mut binaries = Vec::new();
+    for line in stdout.lines() {
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(artifact) = bourne::parse_str::<CargoArtifact>(line) else {
+            continue;
+        };
+        if artifact.reason != "compiler-artifact" {
+            continue;
+        }
+        let is_test = artifact.profile.as_ref().is_some_and(|p| p.test);
+        if is_test && let Some(exe) = artifact.executable {
+            binaries.push(PathBuf::from(exe));
+        }
+    }
+    binaries
+}
+
 fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
     if !rustflags.is_empty() {
@@ -144,23 +164,7 @@ fn run_tests(project_dir: &Path, crappy_dir: &Path) -> Result<Vec<PathBuf>, Erro
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut binaries = Vec::new();
-
-    for line in stdout.lines() {
-        if !line.starts_with('{') {
-            continue;
-        }
-        let Ok(artifact) = bourne::parse_str::<CargoArtifact>(line) else {
-            continue;
-        };
-        if artifact.reason != "compiler-artifact" {
-            continue;
-        }
-        let is_test = artifact.profile.as_ref().is_some_and(|p| p.test);
-        if is_test && let Some(exe) = artifact.executable {
-            binaries.push(PathBuf::from(exe));
-        }
-    }
+    let binaries = find_test_binaries(&stdout);
 
     if binaries.is_empty() {
         return Err(Error::NoTestBinaries);
@@ -202,6 +206,88 @@ fn merge_profdata(tools: &LlvmTools, crappy_dir: &Path) -> Result<PathBuf, Error
     Ok(profdata_path)
 }
 
+fn export_coverage(
+    tools: &LlvmTools,
+    profdata_path: &Path,
+    binaries: &[PathBuf],
+) -> Result<Vec<u8>, Error> {
+    let mut cmd = Command::new(&tools.cov);
+    cmd.args(["export", "-format=text"]);
+    cmd.arg(format!("-instr-profile={}", profdata_path.display()));
+    for bin in binaries {
+        cmd.arg(format!("-object={}", bin.display()));
+    }
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        return Err(Error::Command {
+            tool: "llvm-cov",
+            status: output.status,
+        });
+    }
+
+    Ok(output.stdout)
+}
+
+pub(crate) fn extract_function_coverage(
+    llvm_cov_json: &[u8],
+    project_prefix: &Path,
+) -> Result<Vec<FunctionCoverage>, Error> {
+    let export: LlvmCovExport = bourne::parse(llvm_cov_json)?;
+    let mut results = Vec::new();
+
+    for data in &export.data {
+        for func in &data.functions {
+            if let Some(fc) = convert_function(func, project_prefix) {
+                results.push(fc);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn convert_function(func: &LlvmCovFunction, project_prefix: &Path) -> Option<FunctionCoverage> {
+    let filename = func.filenames.first()?;
+    let file_path = PathBuf::from(filename);
+
+    if !file_path.starts_with(project_prefix) {
+        return None;
+    }
+
+    if func.regions.is_empty() {
+        return None;
+    }
+
+    let (start_line, end_line) = region_span(&func.regions)?;
+    let line_coverage_pct = compute_line_coverage(&func.regions);
+
+    Some(FunctionCoverage {
+        file: file_path,
+        start_line,
+        end_line,
+        line_coverage_pct,
+    })
+}
+
+fn region_span(regions: &[Vec<u64>]) -> Option<(u32, u32)> {
+    let mut start = u32::MAX;
+    let mut end = 0u32;
+
+    for region in regions {
+        if region.len() >= 3 {
+            start = start.min(region[0] as u32);
+            end = end.max(region[2] as u32);
+        }
+    }
+
+    if start == u32::MAX {
+        None
+    } else {
+        Some((start, end))
+    }
+}
+
 pub(crate) fn compute_line_coverage(regions: &[Vec<u64>]) -> f64 {
     let mut line_hits: HashMap<u32, u64> = HashMap::new();
 
@@ -240,68 +326,10 @@ pub fn collect_coverage(project_dir: &Path) -> Result<Vec<FunctionCoverage>, Err
     let binaries = run_tests(project_dir, &crappy_dir)?;
     let tools = find_llvm_tools()?;
     let profdata_path = merge_profdata(&tools, &crappy_dir)?;
-
-    let mut cmd = Command::new(&tools.cov);
-    cmd.args(["export", "-format=text"]);
-    cmd.arg(format!("-instr-profile={}", profdata_path.display()));
-    for bin in &binaries {
-        cmd.arg(format!("-object={}", bin.display()));
-    }
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        return Err(Error::Command {
-            tool: "llvm-cov",
-            status: output.status,
-        });
-    }
-
-    let export: LlvmCovExport = bourne::parse(&output.stdout)?;
+    let json = export_coverage(&tools, &profdata_path, &binaries)?;
     let project_prefix = project_dir.canonicalize()?;
 
-    let mut results = Vec::new();
-
-    for data in &export.data {
-        for func in &data.functions {
-            let Some(filename) = func.filenames.first() else {
-                continue;
-            };
-            let file_path = PathBuf::from(filename);
-
-            if !file_path.starts_with(&project_prefix) {
-                continue;
-            }
-
-            if func.regions.is_empty() {
-                continue;
-            }
-
-            let mut start_line = u32::MAX;
-            let mut end_line = 0u32;
-
-            for region in &func.regions {
-                if region.len() >= 3 {
-                    start_line = start_line.min(region[0] as u32);
-                    end_line = end_line.max(region[2] as u32);
-                }
-            }
-
-            if start_line == u32::MAX {
-                continue;
-            }
-
-            let line_coverage_pct = compute_line_coverage(&func.regions);
-
-            results.push(FunctionCoverage {
-                file: file_path,
-                start_line,
-                end_line,
-                line_coverage_pct,
-            });
-        }
-    }
-
-    Ok(results)
+    extract_function_coverage(&json, &project_prefix)
 }
 
 #[cfg(test)]
@@ -309,7 +337,6 @@ mod tests {
     use super::*;
 
     fn region(start: u64, end: u64, count: u64) -> Vec<u64> {
-        // [startLine, startCol, endLine, endCol, count, fileId, expandedFileId, kind]
         vec![start, 1, end, 1, count, 0, 0, 0]
     }
 
@@ -338,7 +365,6 @@ mod tests {
 
     #[test]
     fn non_code_region_skipped() {
-        // kind=2 (gap region) should be ignored
         let regions = vec![vec![1, 1, 5, 1, 0, 0, 0, 2]];
         assert!((compute_line_coverage(&regions) - 100.0).abs() < f64::EPSILON);
     }
@@ -346,7 +372,6 @@ mod tests {
     #[test]
     fn overlapping_regions_take_max_count() {
         let regions = vec![region(1, 3, 0), region(2, 3, 5)];
-        // line 1: 0, line 2: max(0,5)=5, line 3: max(0,5)=5
         let cov = compute_line_coverage(&regions);
         let expected = 2.0 / 3.0 * 100.0;
         assert!((cov - expected).abs() < 0.01);
@@ -354,8 +379,52 @@ mod tests {
 
     #[test]
     fn short_region_ignored() {
-        // fewer than 5 elements → skipped
         let regions = vec![vec![1, 2, 3]];
         assert!((compute_line_coverage(&regions) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn region_span_basic() {
+        let regions = vec![region(5, 10, 1), region(12, 20, 0)];
+        assert_eq!(region_span(&regions), Some((5, 20)));
+    }
+
+    #[test]
+    fn region_span_empty() {
+        assert_eq!(region_span(&[]), None);
+    }
+
+    #[test]
+    fn find_test_binaries_parses_artifacts() {
+        let stdout = r#"{"reason":"compiler-artifact","package_id":"test","executable":"/bin/test1","profile":{"test":true},"target":{"kind":["lib"]},"features":[],"filenames":[],"fresh":false}
+{"reason":"compiler-artifact","package_id":"test","executable":null,"profile":{"test":false},"target":{"kind":["lib"]},"features":[],"filenames":[],"fresh":false}
+not json at all
+{"reason":"build-finished","success":true}
+"#;
+        let bins = find_test_binaries(stdout);
+        assert_eq!(bins, vec![PathBuf::from("/bin/test1")]);
+    }
+
+    #[test]
+    fn find_test_binaries_skips_non_test_profile() {
+        let stdout = r#"{"reason":"compiler-artifact","package_id":"x","executable":"/bin/x","profile":{"test":false},"target":{"kind":["lib"]},"features":[],"filenames":[],"fresh":false}"#;
+        assert!(find_test_binaries(stdout).is_empty());
+    }
+
+    #[test]
+    fn find_test_binaries_skips_null_executable() {
+        let stdout = r#"{"reason":"compiler-artifact","package_id":"x","executable":null,"profile":{"test":true},"target":{"kind":["lib"]},"features":[],"filenames":[],"fresh":false}"#;
+        assert!(find_test_binaries(stdout).is_empty());
+    }
+
+    #[test]
+    fn extract_function_coverage_filters_by_prefix() {
+        let json = br#"{"data":[{"functions":[
+            {"name":"f","filenames":["/proj/src/lib.rs"],"regions":[[1,1,5,1,3,0,0,0]],"count":3},
+            {"name":"g","filenames":["/other/src/lib.rs"],"regions":[[1,1,5,1,1,0,0,0]],"count":1}
+        ]}]}"#;
+        let results = extract_function_coverage(json, Path::new("/proj")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file, PathBuf::from("/proj/src/lib.rs"));
     }
 }

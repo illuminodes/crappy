@@ -200,7 +200,8 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn analyze_source(source: &str) -> Vec<(String, u32)> {
+#[cfg(test)]
+fn analyze_source(source: &str) -> Vec<(String, u32)> {
     let syntax = syn::parse_file(source).expect("test source must parse");
     let mut visitor = FileVisitor {
         file: PathBuf::from("test.rs"),

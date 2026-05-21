@@ -53,19 +53,29 @@ impl From<bourne::Error> for Error {
     }
 }
 
-struct Opts {
-    threshold: Option<f64>,
-    top: Option<usize>,
+pub(crate) struct Opts {
+    pub threshold: Option<f64>,
+    pub top: Option<usize>,
 }
 
-fn parse_args() -> Result<Opts, Error> {
-    let args: Vec<String> = std::env::args().collect();
-    let args = if args.get(1).is_some_and(|s| s == "crappy") {
-        &args[2..]
-    } else {
-        &args[1..]
-    };
+enum Action {
+    Run(Opts),
+    Help,
+    Version,
+}
 
+fn arg_error(msg: &str) -> Error {
+    Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))
+}
+
+fn parse_flag_value<'a>(args: &'a [String], i: &mut usize, name: &str) -> Result<&'a str, Error> {
+    *i += 1;
+    args.get(*i)
+        .map(|s| s.as_str())
+        .ok_or_else(|| arg_error(&format!("{name} requires a value")))
+}
+
+fn parse_args_from(args: &[String]) -> Result<Action, Error> {
     let mut opts = Opts {
         threshold: None,
         top: None,
@@ -75,44 +85,40 @@ fn parse_args() -> Result<Opts, Error> {
     while i < args.len() {
         match args[i].as_str() {
             "--threshold" => {
-                i += 1;
-                let val = args.get(i).ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "--threshold requires a value",
-                    )
-                })?;
-                opts.threshold = Some(val.parse::<f64>().map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid threshold value")
-                })?);
+                let val = parse_flag_value(args, &mut i, "--threshold")?;
+                opts.threshold = Some(
+                    val.parse::<f64>()
+                        .map_err(|_| arg_error("invalid threshold value"))?,
+                );
             }
             "--top" => {
-                i += 1;
-                let val = args.get(i).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "--top requires a value")
-                })?;
-                opts.top = Some(val.parse::<usize>().map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid top value")
-                })?);
+                let val = parse_flag_value(args, &mut i, "--top")?;
+                opts.top = Some(
+                    val.parse::<usize>()
+                        .map_err(|_| arg_error("invalid top value"))?,
+                );
             }
-            "-h" | "--help" => {
-                print_help();
-                std::process::exit(0);
-            }
-            "-V" | "--version" => {
-                println!("cargo-crappy {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
-            }
+            "-h" | "--help" => return Ok(Action::Help),
+            "-V" | "--version" => return Ok(Action::Version),
             other => {
                 eprintln!("unknown option: {other}");
-                print_help();
-                std::process::exit(2);
+                return Ok(Action::Help);
             }
         }
         i += 1;
     }
 
-    Ok(opts)
+    Ok(Action::Run(opts))
+}
+
+fn parse_args() -> Result<Action, Error> {
+    let args: Vec<String> = std::env::args().collect();
+    let args = if args.get(1).is_some_and(|s| s == "crappy") {
+        &args[2..]
+    } else {
+        &args[1..]
+    };
+    parse_args_from(args)
 }
 
 fn print_help() {
@@ -132,7 +138,18 @@ OPTIONS:
 }
 
 fn run() -> Result<(), Error> {
-    let opts = parse_args()?;
+    let opts = match parse_args()? {
+        Action::Run(opts) => opts,
+        Action::Help => {
+            print_help();
+            return Ok(());
+        }
+        Action::Version => {
+            println!("cargo-crappy {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    };
+
     let project_dir = std::env::current_dir()?;
 
     eprintln!("Running tests with coverage instrumentation...");
@@ -161,5 +178,76 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e}");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_args() {
+        let a = args(&[]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert!(opts.threshold.is_none());
+        assert!(opts.top.is_none());
+    }
+
+    #[test]
+    fn threshold_flag() {
+        let a = args(&["--threshold", "30"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert!((opts.threshold.unwrap() - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn top_flag() {
+        let a = args(&["--top", "5"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(opts.top.unwrap(), 5);
+    }
+
+    #[test]
+    fn both_flags() {
+        let a = args(&["--threshold", "20", "--top", "10"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert!((opts.threshold.unwrap() - 20.0).abs() < f64::EPSILON);
+        assert_eq!(opts.top.unwrap(), 10);
+    }
+
+    #[test]
+    fn help_flag() {
+        let a = args(&["--help"]);
+        assert!(matches!(parse_args_from(&a).unwrap(), Action::Help));
+    }
+
+    #[test]
+    fn version_flag() {
+        let a = args(&["-V"]);
+        assert!(matches!(parse_args_from(&a).unwrap(), Action::Version));
+    }
+
+    #[test]
+    fn missing_threshold_value() {
+        let a = args(&["--threshold"]);
+        assert!(parse_args_from(&a).is_err());
+    }
+
+    #[test]
+    fn invalid_threshold_value() {
+        let a = args(&["--threshold", "abc"]);
+        assert!(parse_args_from(&a).is_err());
     }
 }
