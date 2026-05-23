@@ -23,10 +23,11 @@ pub trait FunctionVisitor {
     }
 
     fn handle_item_impl_enter(&mut self, node: &syn::ItemImpl) {
+        let self_ty = format_type(&node.self_ty);
         let ctx = if let Some((_, path, _)) = &node.trait_ {
-            format_path(path)
+            format!("<{} as {}>", self_ty, format_path(path))
         } else {
-            format_type(&node.self_ty)
+            self_ty
         };
         self.context_mut().push(ctx);
     }
@@ -164,7 +165,7 @@ mod tests {
     #[test]
     fn trait_impl_qualified() {
         let calls = visit("struct S; trait T { fn m(&self); } impl T for S { fn m(&self) {} }");
-        assert_eq!(calls, vec![("T::m".into(), false)]);
+        assert_eq!(calls, vec![("<S as T>::m".into(), false)]);
     }
 
     #[test]

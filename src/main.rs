@@ -63,6 +63,7 @@ impl From<bourne::Error> for Error {
 pub(crate) struct Opts {
     pub threshold: Option<f64>,
     pub top: Option<usize>,
+    pub package: Option<String>,
     pub exclude_paths: Vec<String>,
     pub exclude_fns: Vec<String>,
     pub features: Vec<String>,
@@ -115,6 +116,10 @@ fn parse_args_from(args: &[String]) -> Result<Action, Error> {
                 let val = parse_flag_value(args, &mut i, "--exclude-fn")?;
                 opts.exclude_fns.push(val.to_string());
             }
+            "-p" | "--package" => {
+                let val = parse_flag_value(args, &mut i, "--package")?;
+                opts.package = Some(val.to_string());
+            }
             "--features" => {
                 let val = parse_flag_value(args, &mut i, "--features")?;
                 opts.features.push(val.to_string());
@@ -153,6 +158,7 @@ USAGE:
     cargo crappy [OPTIONS]
 
 OPTIONS:
+    -p, --package <SPEC>   Analyze only the specified package (in a workspace)
     --threshold <N>        Exit with code 1 if any function exceeds this CRAPPY score
     --top <N>              Show only the top N worst functions
     --exclude-path <PAT>   Exclude functions whose file path contains PAT (repeatable)
@@ -209,6 +215,25 @@ OUTPUT:
 
 pub(crate) fn cargo_feature_args(opts: &Opts) -> Vec<String> {
     let mut args = Vec::new();
+    if let Some(pkg) = &opts.package {
+        args.push("--package".to_string());
+        args.push(pkg.clone());
+    }
+    for f in &opts.features {
+        args.push("--features".to_string());
+        args.push(f.clone());
+    }
+    if opts.all_features {
+        args.push("--all-features".to_string());
+    }
+    if opts.no_default_features {
+        args.push("--no-default-features".to_string());
+    }
+    args
+}
+
+pub(crate) fn cargo_metadata_args(opts: &Opts) -> Vec<String> {
+    let mut args = Vec::new();
     for f in &opts.features {
         args.push("--features".to_string());
         args.push(f.clone());
@@ -239,13 +264,14 @@ pub(crate) fn analyze(
     opts: &Opts,
 ) -> Result<Vec<scoring::CrapRecord>, Error> {
     let start = Instant::now();
-    let feature_args = cargo_feature_args(opts);
+    let cargo_args = cargo_feature_args(opts);
+    let metadata_args = cargo_metadata_args(opts);
 
     eprintln!(
         "{} tests with coverage instrumentation...",
         color::bold_green("Instrumenting")
     );
-    let cov = coverage::collect_coverage(project_dir, &feature_args)?;
+    let cov = coverage::collect_coverage(project_dir, &cargo_args)?;
     eprintln!(
         "    {} {} functions with coverage data",
         color::bold_green("Collected"),
@@ -256,7 +282,8 @@ pub(crate) fn analyze(
         "    {} complexity and idioms...",
         color::bold_green("Analyzing")
     );
-    let (comp, idioms) = complexity::analyze_all(project_dir, &feature_args)?;
+    let (comp, idioms) =
+        complexity::analyze_all(project_dir, &metadata_args, opts.package.as_deref())?;
     eprintln!(
         "    {} {} functions",
         color::bold_green("Analyzed"),
@@ -285,9 +312,45 @@ pub(crate) fn analyze(
     Ok(records)
 }
 
+fn detect_package(project_dir: &std::path::Path) -> Option<String> {
+    let manifest = project_dir.join("Cargo.toml");
+    let content = std::fs::read_to_string(&manifest).ok()?;
+
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if in_package && trimmed.starts_with("name") {
+            let (_, val) = trimmed.split_once('=')?;
+            let val = val.trim().trim_matches('"');
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_workspace_member(project_dir: &std::path::Path) -> bool {
+    let mut dir = project_dir.parent();
+    while let Some(d) = dir {
+        let manifest = d.join("Cargo.toml");
+        if let Ok(content) = std::fs::read_to_string(&manifest) {
+            if content.contains("[workspace]") {
+                return true;
+            }
+        }
+        dir = d.parent();
+    }
+    false
+}
+
 #[allow(unknown_lints, crappy)]
 fn run() -> Result<(), Error> {
-    let opts = match parse_args()? {
+    let mut opts = match parse_args()? {
         Action::Run(opts) => opts,
         Action::Help => {
             print_help();
@@ -300,6 +363,10 @@ fn run() -> Result<(), Error> {
     };
 
     let project_dir = std::env::current_dir()?;
+
+    if opts.package.is_none() && is_workspace_member(&project_dir) {
+        opts.package = detect_package(&project_dir);
+    }
     let records = analyze(&project_dir, &opts)?;
 
     if let Some(threshold) = opts.threshold
@@ -616,6 +683,96 @@ mod tests {
         let branchy = records.iter().find(|r| r.name == "branchy").unwrap();
         assert!(branchy.complexity >= 2);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_flag_short() {
+        let a = args(&["-p", "my-crate"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(opts.package.as_deref(), Some("my-crate"));
+    }
+
+    #[test]
+    fn package_flag_long() {
+        let a = args(&["--package", "my-crate"]);
+        let Action::Run(opts) = parse_args_from(&a).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(opts.package.as_deref(), Some("my-crate"));
+    }
+
+    #[test]
+    fn cargo_feature_args_with_package() {
+        let opts = Opts {
+            package: Some("my-crate".into()),
+            ..Opts::default()
+        };
+        let a = cargo_feature_args(&opts);
+        assert_eq!(a, vec!["--package", "my-crate"]);
+    }
+
+    #[test]
+    fn detect_package_finds_name() {
+        let dir = std::env::temp_dir().join(format!("crappy-detect-{}-find", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(detect_package(&dir), Some("my-crate".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detect_package_returns_none_for_workspace_root() {
+        let dir = std::env::temp_dir().join(format!("crappy-detect-{}-ws", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        assert_eq!(detect_package(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_workspace_member_detects_parent_workspace() {
+        let dir = std::env::temp_dir().join(format!("crappy-ws-{}-member", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let member = dir.join("crates").join("foo");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert!(is_workspace_member(&member));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_workspace_member_false_for_standalone() {
+        let dir = std::env::temp_dir().join(format!("crappy-ws-{}-standalone", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"solo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert!(!is_workspace_member(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

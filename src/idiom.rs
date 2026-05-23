@@ -350,46 +350,57 @@ fn fingerprint_sig(sig: &syn::Signature, self_type: Option<&String>) -> String {
                 };
                 parts.push(mutability);
             }
-            FnArg::Typed(t) => parts.push(type_fingerprint(&t.ty)),
+            FnArg::Typed(t) => parts.push(type_fingerprint_resolved(&t.ty, self_type)),
         }
     }
     let ret = match &sig.output {
         ReturnType::Default => "()".to_string(),
-        ReturnType::Type(_, ty) => type_fingerprint(ty),
+        ReturnType::Type(_, ty) => type_fingerprint_resolved(ty, self_type),
     };
     format!("({})->{ret}", parts.join(","))
 }
 
-fn type_fingerprint(ty: &Type) -> String {
+fn type_fingerprint_resolved(ty: &Type, self_type: Option<&String>) -> String {
     match ty {
-        Type::Path(tp) => tp
-            .path
-            .segments
-            .last()
-            .map_or_else(|| "_".to_string(), leak_ident),
+        Type::Path(tp) => tp.path.segments.last().map_or_else(
+            || "_".to_string(),
+            |seg| leak_ident_resolved(seg, self_type),
+        ),
         Type::Reference(r) => {
             let mutability = if r.mutability.is_some() { "&mut " } else { "&" };
-            format!("{mutability}{}", type_fingerprint(&r.elem))
+            format!(
+                "{mutability}{}",
+                type_fingerprint_resolved(&r.elem, self_type)
+            )
         }
         Type::Tuple(t) => {
-            let inner: Vec<_> = t.elems.iter().map(type_fingerprint).collect();
+            let inner: Vec<_> = t
+                .elems
+                .iter()
+                .map(|e| type_fingerprint_resolved(e, self_type))
+                .collect();
             format!("({})", inner.join(","))
         }
-        Type::Slice(s) => format!("[{}]", type_fingerprint(&s.elem)),
+        Type::Slice(s) => format!("[{}]", type_fingerprint_resolved(&s.elem, self_type)),
         Type::ImplTrait(_) => "impl_".to_string(),
         _ => "_".to_string(),
     }
 }
 
-fn leak_ident(seg: &syn::PathSegment) -> String {
+fn leak_ident_resolved(seg: &syn::PathSegment, self_type: Option<&String>) -> String {
     let base = seg.ident.to_string();
+    let base = if base == "Self" {
+        self_type.map_or(base, String::clone)
+    } else {
+        base
+    };
     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
         let generics: Vec<_> = args
             .args
             .iter()
             .filter_map(|a| {
                 if let syn::GenericArgument::Type(t) = a {
-                    Some(type_fingerprint(t))
+                    Some(type_fingerprint_resolved(t, self_type))
                 } else {
                     None
                 }
@@ -802,5 +813,16 @@ mod tests {
             syn::parse_file("fn a(x: bool) { if x { } } fn b() { loop { break; } }").unwrap();
         let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
         assert_ne!(results[0].body_fingerprint, results[1].body_fingerprint);
+    }
+
+    #[test]
+    fn sig_fingerprint_resolves_self_in_return_type() {
+        let syntax = syn::parse_file(
+            "struct A; struct B; impl A { fn parse(s: &str) -> Result<Self, ()> { todo!() } } impl B { fn parse(s: &str) -> Result<Self, ()> { todo!() } }",
+        )
+        .unwrap();
+        let results = analyze_idioms_for_file(std::path::Path::new("test.rs"), &syntax);
+        assert_eq!(results.len(), 2);
+        assert_ne!(results[0].sig_fingerprint, results[1].sig_fingerprint);
     }
 }

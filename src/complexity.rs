@@ -250,6 +250,7 @@ bourne::from_json! {
 bourne::from_json! {
     #[bourne(deny_unknown_fields = false)]
     struct MetaPkg {
+        name: String,
         targets: Vec<MetaTarget>,
     }
 }
@@ -262,13 +263,22 @@ bourne::from_json! {
     }
 }
 
-pub fn extract_source_dirs(metadata_json: &[u8], fallback: &Path) -> Vec<PathBuf> {
+pub fn extract_source_dirs(
+    metadata_json: &[u8],
+    fallback: &Path,
+    package: Option<&str>,
+) -> Vec<PathBuf> {
     let Ok(meta) = bourne::parse::<Meta>(metadata_json) else {
         return vec![fallback.join("src")];
     };
 
     let mut dirs = Vec::new();
     for pkg in &meta.packages {
+        if let Some(name) = package {
+            if pkg.name != name {
+                continue;
+            }
+        }
         for target in &pkg.targets {
             if target.kind.iter().any(|k| k == "lib" || k == "bin") {
                 let src_path = PathBuf::from(&target.src_path);
@@ -289,7 +299,11 @@ pub fn extract_source_dirs(metadata_json: &[u8], fallback: &Path) -> Vec<PathBuf
     dirs
 }
 
-fn find_source_dirs(project_dir: &Path, feature_args: &[String]) -> Result<Vec<PathBuf>, Error> {
+fn find_source_dirs(
+    project_dir: &Path,
+    feature_args: &[String],
+    package: Option<&str>,
+) -> Result<Vec<PathBuf>, Error> {
     let mut cmd = std::process::Command::new("cargo");
     cmd.args(["metadata", "--no-deps", "--format-version", "1"]);
     cmd.args(feature_args);
@@ -300,14 +314,15 @@ fn find_source_dirs(project_dir: &Path, feature_args: &[String]) -> Result<Vec<P
         return Ok(vec![project_dir.join("src")]);
     }
 
-    Ok(extract_source_dirs(&output.stdout, project_dir))
+    Ok(extract_source_dirs(&output.stdout, project_dir, package))
 }
 
 pub fn analyze_all(
     project_dir: &Path,
     feature_args: &[String],
+    package: Option<&str>,
 ) -> Result<(Vec<FunctionComplexity>, Vec<crate::idiom::FunctionIdioms>), Error> {
-    let source_dirs = find_source_dirs(project_dir, feature_args)?;
+    let source_dirs = find_source_dirs(project_dir, feature_args, package)?;
 
     let mut rs_files = Vec::new();
     for src_dir in &source_dirs {
@@ -519,7 +534,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = analyze_all(&dir, &[]).map(|(c, _)| c).unwrap();
+        let result = analyze_all(&dir, &[], None).map(|(c, _)| c).unwrap();
         assert_eq!(result.len(), 2);
 
         let simple = result
@@ -540,7 +555,7 @@ mod tests {
     #[test]
     fn analyze_complexity_no_src_dir() {
         let dir = tmpdir("nosrc");
-        let result = analyze_all(&dir, &[]).map(|(c, _)| c).unwrap();
+        let result = analyze_all(&dir, &[], None).map(|(c, _)| c).unwrap();
         assert!(result.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -555,10 +570,10 @@ mod tests {
         fs::write(src.join("lib.rs"), "").unwrap();
 
         let json = format!(
-            r#"{{"packages":[{{"targets":[{{"kind":["lib"],"src_path":"{}"}}]}}]}}"#,
+            r#"{{"packages":[{{"name":"test","targets":[{{"kind":["lib"],"src_path":"{}"}}]}}]}}"#,
             src.join("lib.rs").display()
         );
-        let dirs = extract_source_dirs(json.as_bytes(), &dir);
+        let dirs = extract_source_dirs(json.as_bytes(), &dir, None);
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0], src);
         let _ = fs::remove_dir_all(&dir);
@@ -576,13 +591,13 @@ mod tests {
 
         let json = format!(
             r#"{{"packages":[
-                {{"targets":[{{"kind":["lib"],"src_path":"{}"}}]}},
-                {{"targets":[{{"kind":["lib"],"src_path":"{}"}}]}}
+                {{"name":"a","targets":[{{"kind":["lib"],"src_path":"{}"}}]}},
+                {{"name":"b","targets":[{{"kind":["lib"],"src_path":"{}"}}]}}
             ]}}"#,
             src_a.join("lib.rs").display(),
             src_b.join("lib.rs").display()
         );
-        let dirs = extract_source_dirs(json.as_bytes(), &dir);
+        let dirs = extract_source_dirs(json.as_bytes(), &dir, None);
         assert_eq!(dirs.len(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -598,14 +613,14 @@ mod tests {
         fs::write(tests.join("integration.rs"), "").unwrap();
 
         let json = format!(
-            r#"{{"packages":[{{"targets":[
+            r#"{{"packages":[{{"name":"test","targets":[
                 {{"kind":["lib"],"src_path":"{}"}},
                 {{"kind":["test"],"src_path":"{}"}}
             ]}}]}}"#,
             src.join("lib.rs").display(),
             tests.join("integration.rs").display()
         );
-        let dirs = extract_source_dirs(json.as_bytes(), &dir);
+        let dirs = extract_source_dirs(json.as_bytes(), &dir, None);
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0], src);
         let _ = fs::remove_dir_all(&dir);
@@ -619,10 +634,10 @@ mod tests {
         fs::write(src.join("main.rs"), "").unwrap();
 
         let json = format!(
-            r#"{{"packages":[{{"targets":[{{"kind":["bin"],"src_path":"{}"}}]}}]}}"#,
+            r#"{{"packages":[{{"name":"test","targets":[{{"kind":["bin"],"src_path":"{}"}}]}}]}}"#,
             src.join("main.rs").display()
         );
-        let dirs = extract_source_dirs(json.as_bytes(), &dir);
+        let dirs = extract_source_dirs(json.as_bytes(), &dir, None);
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0], src);
         let _ = fs::remove_dir_all(&dir);
@@ -637,14 +652,14 @@ mod tests {
         fs::write(src.join("main.rs"), "").unwrap();
 
         let json = format!(
-            r#"{{"packages":[{{"targets":[
+            r#"{{"packages":[{{"name":"test","targets":[
                 {{"kind":["lib"],"src_path":"{}"}},
                 {{"kind":["bin"],"src_path":"{}"}}
             ]}}]}}"#,
             src.join("lib.rs").display(),
             src.join("main.rs").display()
         );
-        let dirs = extract_source_dirs(json.as_bytes(), &dir);
+        let dirs = extract_source_dirs(json.as_bytes(), &dir, None);
         assert_eq!(dirs.len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -652,7 +667,7 @@ mod tests {
     #[test]
     fn extract_fallback_on_bad_json() {
         let dir = tmpdir("extract-bad");
-        let dirs = extract_source_dirs(b"not json", &dir);
+        let dirs = extract_source_dirs(b"not json", &dir, None);
         assert_eq!(dirs, vec![dir.join("src")]);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -660,8 +675,32 @@ mod tests {
     #[test]
     fn extract_fallback_on_empty_packages() {
         let dir = tmpdir("extract-empty");
-        let dirs = extract_source_dirs(br#"{"packages":[]}"#, &dir);
+        let dirs = extract_source_dirs(br#"{"packages":[]}"#, &dir, None);
         assert_eq!(dirs, vec![dir.join("src")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_filters_by_package_name() {
+        let dir = tmpdir("extract-filter");
+        let src_a = dir.join("crates/a/src");
+        let src_b = dir.join("crates/b/src");
+        fs::create_dir_all(&src_a).unwrap();
+        fs::create_dir_all(&src_b).unwrap();
+        fs::write(src_a.join("lib.rs"), "").unwrap();
+        fs::write(src_b.join("lib.rs"), "").unwrap();
+
+        let json = format!(
+            r#"{{"packages":[
+                {{"name":"crate-a","targets":[{{"kind":["lib"],"src_path":"{}"}}]}},
+                {{"name":"crate-b","targets":[{{"kind":["lib"],"src_path":"{}"}}]}}
+            ]}}"#,
+            src_a.join("lib.rs").display(),
+            src_b.join("lib.rs").display()
+        );
+        let dirs = extract_source_dirs(json.as_bytes(), &dir, Some("crate-a"));
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], src_a);
         let _ = fs::remove_dir_all(&dir);
     }
 }
