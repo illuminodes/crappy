@@ -14,47 +14,42 @@ pub struct FunctionCoverage {
 
 // --- cargo test --message-format=json structs ---
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct CargoArtifact {
-        reason: String,
-        #[bourne(default)]
-        executable: Option<String>,
-        #[bourne(default)]
-        profile: Option<CargoProfile>,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct CargoArtifact {
+    reason: String,
+    #[bourne(default)]
+    executable: Option<String>,
+    #[bourne(default)]
+    profile: Option<CargoProfile>,
 }
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct CargoProfile {
-        #[bourne(default)]
-        test: bool,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct CargoProfile {
+    #[bourne(default)]
+    test: bool,
 }
 
 // --- llvm-cov export JSON structs ---
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct LlvmCovExport {
-        data: Vec<LlvmCovData>,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct LlvmCovExport {
+    data: Vec<LlvmCovData>,
 }
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct LlvmCovData {
-        functions: Vec<LlvmCovFunction>,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct LlvmCovData {
+    functions: Vec<LlvmCovFunction>,
 }
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct LlvmCovFunction {
-        filenames: Vec<String>,
-        regions: Vec<Vec<u64>>,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct LlvmCovFunction {
+    filenames: Vec<String>,
+    regions: Vec<Vec<u64>>,
 }
 
 pub struct LlvmTools {
@@ -145,7 +140,7 @@ pub fn find_test_binaries(stdout: &str) -> Vec<PathBuf> {
         if !line.starts_with('{') {
             continue;
         }
-        let Ok(artifact) = bourne::parse_str::<CargoArtifact>(line) else {
+        let Ok(artifact) = json_bourne::parse_str::<CargoArtifact>(line) else {
             continue;
         };
         if artifact.reason != "compiler-artifact" {
@@ -266,7 +261,7 @@ pub fn extract_function_coverage(
     llvm_cov_json: &[u8],
     project_prefix: &Path,
 ) -> Result<Vec<FunctionCoverage>, Error> {
-    let export: LlvmCovExport = bourne::parse(llvm_cov_json)?;
+    let export: LlvmCovExport = json_bourne::parse(llvm_cov_json)?;
     let mut results = Vec::new();
 
     for data in &export.data {

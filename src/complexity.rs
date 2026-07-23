@@ -240,27 +240,24 @@ fn analyze_source(source: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct Meta {
-        packages: Vec<MetaPkg>,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct Meta {
+    packages: Vec<MetaPkg>,
 }
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct MetaPkg {
-        name: String,
-        targets: Vec<MetaTarget>,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct MetaPkg {
+    name: String,
+    targets: Vec<MetaTarget>,
 }
 
-bourne::from_json! {
-    #[bourne(deny_unknown_fields = false)]
-    struct MetaTarget {
-        kind: Vec<String>,
-        src_path: String,
-    }
+#[derive(json_bourne::FromJson)]
+#[bourne(deny_unknown_fields = false)]
+struct MetaTarget {
+    kind: Vec<String>,
+    src_path: String,
 }
 
 pub fn extract_source_dirs(
@@ -268,16 +265,16 @@ pub fn extract_source_dirs(
     fallback: &Path,
     package: Option<&str>,
 ) -> Vec<PathBuf> {
-    let Ok(meta) = bourne::parse::<Meta>(metadata_json) else {
+    let Ok(meta) = json_bourne::parse::<Meta>(metadata_json) else {
         return vec![fallback.join("src")];
     };
 
     let mut dirs = Vec::new();
     for pkg in &meta.packages {
-        if let Some(name) = package {
-            if pkg.name != name {
-                continue;
-            }
+        if let Some(name) = package
+            && pkg.name != name
+        {
+            continue;
         }
         for target in &pkg.targets {
             if target.kind.iter().any(|k| k == "lib" || k == "bin") {

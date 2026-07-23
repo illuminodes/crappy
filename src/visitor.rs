@@ -24,7 +24,7 @@ pub trait FunctionVisitor {
 
     fn handle_item_impl_enter(&mut self, node: &syn::ItemImpl) {
         let self_ty = format_type(&node.self_ty);
-        let ctx = if let Some((_, path, _)) = &node.trait_ {
+        let ctx = if let Some((path, _)) = &node.trait_ {
             format!("<{} as {}>", self_ty, format_path(path))
         } else {
             self_ty

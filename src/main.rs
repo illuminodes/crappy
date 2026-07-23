@@ -22,7 +22,7 @@ pub enum Error {
         tool: String,
     },
     Io(std::io::Error),
-    Json(bourne::Error),
+    Json(json_bourne::Error),
     Syn {
         file: PathBuf,
         error: syn::Error,
@@ -53,8 +53,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<bourne::Error> for Error {
-    fn from(e: bourne::Error) -> Self {
+impl From<json_bourne::Error> for Error {
+    fn from(e: json_bourne::Error) -> Self {
         Self::Json(e)
     }
 }
@@ -338,10 +338,10 @@ fn is_workspace_member(project_dir: &std::path::Path) -> bool {
     let mut dir = project_dir.parent();
     while let Some(d) = dir {
         let manifest = d.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&manifest) {
-            if content.contains("[workspace]") {
-                return true;
-            }
+        if let Ok(content) = std::fs::read_to_string(&manifest)
+            && content.contains("[workspace]")
+        {
+            return true;
         }
         dir = d.parent();
     }
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn display_json_error() {
-        let err = bourne::parse::<bool>(b"not json").unwrap_err();
+        let err = json_bourne::parse::<bool>(b"not json").unwrap_err();
         let e = Error::Json(err);
         assert!(!format!("{e}").is_empty());
     }
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn from_bourne_error() {
-        let b_err = bourne::parse::<bool>(b"bad").unwrap_err();
+        let b_err = json_bourne::parse::<bool>(b"bad").unwrap_err();
         let e: Error = b_err.into();
         assert!(matches!(e, Error::Json(_)));
     }

@@ -7,7 +7,7 @@ repository = "https://github.com/illuminodes/cargo-crappy"
 description = "CRAP metric analysis for Rust — clippy-style diagnostics for change-risk, complexity, coverage, and idiomatic code"
 keywords = ["cargo", "testing", "coverage", "complexity", "lint"]
 categories = ["development-tools::cargo-plugins", "development-tools::testing"]
-rust-version = "1.85"
+rust-version = "1.97"
 
 [[bin]]
 name = "cargo-crappy"
@@ -20,6 +20,6 @@ pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 
 [dependencies]
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
-bourne = { version = "0.1", package = "json-bourne" }
+json-bourne = { version = "0.2", features = ["derive"] }
